@@ -190,8 +190,17 @@ def parse_args():
     else:
         assert args.image_size is not None, '--image-size must be specified'
         assert args.scheduler_type is not None, '--scheduler-type must be specified'
-        assert args.model_type is not None, '--model-type must be specified'
-        assert args.start_index is not None, '--start-index must be specified'
+        if args.model_type is None:
+            args.model_type = 'unet' if args.image_size in (64, 128) else 'uvit'
+            print(f'--model-type not specified, using {args.model_type!r} for image_size={args.image_size}')
+        if args.start_index is None:
+            args.start_index = 0
+            print('--start-index not specified, using 0')
+
+    if args.model_type == 'unet' and args.image_size not in (64, 128):
+        raise ValueError('--model-type unet only supports --image-size 64 or 128')
+    if args.model_type == 'uvit' and args.image_size not in (256, 512):
+        raise ValueError('--model-type uvit only supports --image-size 256 or 512')
 
     return args
     
