@@ -37,36 +37,46 @@ For implementation details and usage instructions, please refer to the individua
 
 ## Installing environment
 
-To install the environment, use `hatch`:
+This repository is configured for [`uv`](https://docs.astral.sh/uv/) with Python 3.11.
+The default GPU setup pins PyTorch 2.3.1 to the CUDA 11.8 wheel index.
 
 ```bash
-# Install hatch if not already installed
-pip install hatch
+# Install the CUDA 11.8 runtime environment used for GPU experiments
+uv sync --extra cu118 --group dev
 
-# Create and activate default environment
-hatch shell
+# Optional CPU-only environment for local checks
+uv sync --extra cpu --group dev
 
-# Alternatively, for CPU-only installation
-hatch -e cpu shell
+# Verify the selected PyTorch build
+uv run --extra cu118 --group dev python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+
+# Generate deterministic diffusion starting points used by the generation scripts
+uv run --extra cu118 --group dev python scripts/generate_diffusion_starting_data.py
 ```
+
+For a GPU machine, use `uv sync --extra cu118 --group dev` and keep the generated
+`uv.lock` committed so the same package set is reused across machines. If you are
+working CPU-only, replace `--extra cu118` with `--extra cpu` in the `uv run` commands.
 
 ## Download models:
 
 ```bash
+mkdir -p models
+
 # Download U-ViT models
-hatch run download-uvit-imagenet64-M
-hatch run download-uvit-256
-hatch run download-uvit-512
+uv run --extra cu118 --group dev gdown 1igVgRY7-A0ZV3XqdNcMGOnIGOxKr9azv -O models/imagenet64_uvit_mid.pth
+uv run --extra cu118 --group dev gdown 13StUdrjaaSXjfqqF7M47BzPyhMAArQ4u -O models/imagenet256_uvit_huge.pth
+uv run --extra cu118 --group dev gdown 1uegr2o7cuKXtf2akWGAN2Vnlrtw5YKQq -O models/imagenet512_uvit_huge.pth
 
-# Download ADM models
-hatch run download-adm-imagenet128
-hatch run download-adm-imagenet64
+# Download U-ViT autoencoder and intrinsic LoRA weights
+uv run --extra cu118 --group dev gdown 10nbEiFd4YCHlzfTkJjZf45YcSMCN34m6 -O models/autoencoder_kl_ema.pth
+uv run --extra cu118 --group dev gdown 1aD0hJrORn4CgnH2-yEh5g7L2Tkv4A5AD -O models/sd_single_depth_pytorch_model.bin
 
-# Download other models
-hatch run download-uvit-autoencoder
-hatch run download-ilora-sd-depth
-hatch run download-imagenet64-classifier
-hatch run download-imagenet128-classifier
+# Download ADM models and classifiers
+wget -P models https://openaipublic.blob.core.windows.net/diffusion/jul-2021/128x128_diffusion.pt
+wget -P models https://openaipublic.blob.core.windows.net/diffusion/jul-2021/64x64_diffusion.pt
+wget -P models https://openaipublic.blob.core.windows.net/diffusion/jul-2021/64x64_classifier.pt
+wget -P models https://openaipublic.blob.core.windows.net/diffusion/jul-2021/128x128_classifier.pt
 ```
 
 ## Dataset download for FID calculation
@@ -90,52 +100,76 @@ as follow:
 
 ```sh
 # Resize to 64x64
-python image_resizer_imagenet.py -i PATH/TO/IMAGENET -o OUTPUT/FOLDER -r -s 64
+uv run --extra cu118 --group dev python image_resizer_imagenet.py -i PATH/TO/IMAGENET -o OUTPUT/FOLDER -r -s 64
 
 # Resize to 128x128
-python image_resizer_imagenet.py -i PATH/TO/IMAGENET -o OUTPUT/FOLDER -r -s 128
+uv run --extra cu118 --group dev python image_resizer_imagenet.py -i PATH/TO/IMAGENET -o OUTPUT/FOLDER -r -s 128
 
 # Resize to 256x256
-python image_resizer_imagenet.py -i PATH/TO/IMAGENET -o OUTPUT/FOLDER -r -s 256
+uv run --extra cu118 --group dev python image_resizer_imagenet.py -i PATH/TO/IMAGENET -o OUTPUT/FOLDER -r -s 256
 
 # Resize to 512x512 
-python image_resizer_imagenet.py -i PATH/TO/IMAGENET -o OUTPUT/FOLDER -r -s 512
+uv run --extra cu118 --group dev python image_resizer_imagenet.py -i PATH/TO/IMAGENET -o OUTPUT/FOLDER -r -s 512
 ```
 
 
 ### CIFAR-10 Download
 
-You can download CIFAR-10 from the following [link](htthttps://www.kaggle.com/datasets/ayush1220/cifar10) and put under data/cifar10
+You can download CIFAR-10 from the following [link](https://www.kaggle.com/datasets/ayush1220/cifar10) and put under data/cifar10
+
 # Experiments
 
 ## Generate uncertainty maps
 
 Once download the models you can generate the uncertainty maps for imagenet with the following command:
 
-```python
-python scripts/generate_dataset_score_uncertainty_imagenet.py --num-samples 10_000 --batch-size 128 -M 5 --dropout 0.5 --multi-gpu --scheduler uncertainty_zigzag_centered --image-size 128 --generation-steps 50 --start-step-uc 40 --num-steps-uc 10  --index-seed 3
+```bash
+uv run --extra cu118 --group dev python scripts/generate_dataset_score_uncertainty_imagenet.py --num-samples 10000 --batch-size 128 -M 5 --dropout 0.5 --multi-gpu --scheduler uncertainty_zigzag_centered --image-size 128 --generation-steps 50 --start-step-uc 40 --num-steps-uc 10 --index-seed 3
 ``` 
+
+Common scheduler values for uncertainty experiments are `mc_dropout`, `flip`,
+`uncertainty`, `flip_grad`, `uncertainty_centered`, `uncertainty_centered_d`,
+`uncertainty_image`, `uncertainty_zigzag_centered`, `uncertainty_fisher`, and
+`dpm_2_uncertainty_centered`.
+
+Example sweep:
+
+```bash
+for scheduler in mc_dropout uncertainty_centered uncertainty_zigzag_centered; do
+  uv run --extra cu118 --group dev python scripts/generate_dataset_score_uncertainty_imagenet.py \
+    --num-samples 10000 \
+    --batch-size 128 \
+    -M 5 \
+    --dropout 0.5 \
+    --multi-gpu \
+    --scheduler "$scheduler" \
+    --image-size 128 \
+    --generation-steps 50 \
+    --start-step-uc 40 \
+    --num-steps-uc 10
+done
+```
 
 
 ## FID Calculation 
 To compute FID first you need to compute true dataset distribution:
-```python
-python compute_dataset_fid.py
+```bash
+uv run --extra cu118 --group dev python scripts/compute_dataset_fid.py
 ```
 
 Then you can compute FID score with the following command:
 
-```python
-  python compute_fid_imagenet.py --config imagenet256_1000_samples
+```bash
+uv run --extra cu118 --group dev python scripts/compute_fid_imagenet.py --config imagenet256_1000_samples
 ```
 
 ## Uncertainty guidance
 
 Once download the models you can use the uncertainty to guide the generative process with the following command:
 
-```python
+```bash
 
-python scripts/generate_with_uncertainty_threshold_stable_diffusion.py --prompt "a beautiful mountain landscape" --num-steps 20 --seed 123 --percentile 0.9 --strength 1.0 --num-steps-threshold 2
+uv run --extra cu118 --group dev python scripts/generate_with_uncertainty_threshold_stable_diffusion.py --prompt "a beautiful mountain landscape" --num-steps 20 --seed 123 --percentile 0.9 --strength 1.0 --num-steps-threshold 2
 
 ```
 
