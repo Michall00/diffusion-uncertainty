@@ -21,11 +21,12 @@ MULTI_GPU ?=
 RUN ?= $(shell ls -td results/score-uncertainty/* 2>/dev/null | head -1)
 GUIDANCE_RUN ?= $(shell ls -td results/uncertainty_guidance/imagenet*/* 2>/dev/null | head -1)
 GUIDANCE_TYPE ?= gradient
-GUIDANCE_PERCENTILE ?= 0.95
+GUIDANCE_M ?= 5
+GUIDANCE_PERCENTILE ?= 0.85
 GUIDANCE_STEPS ?= 20
 GUIDANCE_START_STEP ?= 0
-GUIDANCE_NUM_STEPS ?= 5
-GUIDANCE_LAMBDA ?= 0.1
+GUIDANCE_NUM_STEPS ?= 10
+GUIDANCE_LAMBDA ?= 1.0
 GUIDANCE_GRADIENT_WRT ?= input
 GUIDANCE_GRADIENT_DIRECTION ?= descend
 GUIDANCE_THRESHOLD_TYPE ?= higher
@@ -120,6 +121,7 @@ run-imagenet-guided: ## Run ImageNet generation guided by online uncertainty
 		--start-index $(START_INDEX) \
 		--seed $(SEED) \
 		--guidance-type $(GUIDANCE_TYPE) \
+		-M $(GUIDANCE_M) \
 		--percentile $(GUIDANCE_PERCENTILE) \
 		--lambda-update $(GUIDANCE_LAMBDA) \
 		--gradient-wrt $(GUIDANCE_GRADIENT_WRT) \
@@ -139,7 +141,14 @@ smoke: ## End-to-end ADM128 smoke test and grid generation
 smoke-guided: ## End-to-end ADM128 smoke test with uncertainty-guided generation
 	$(MAKE) download-adm128
 	$(MAKE) starting-data DATASET=imagenet128 N=4 EXTRA_SAMPLES=0
-	$(MAKE) run-imagenet-guided DATASET=imagenet128 N=4 BATCH_SIZE=1 GUIDANCE_STEPS=8 GUIDANCE_START_STEP=0 GUIDANCE_NUM_STEPS=1 START_INDEX=0 SKIP_FID=--skip-fid
+	$(MAKE) run-imagenet-guided DATASET=imagenet128 N=4 BATCH_SIZE=1 GUIDANCE_STEPS=20 GUIDANCE_START_STEP=0 GUIDANCE_NUM_STEPS=10 GUIDANCE_PERCENTILE=0.85 GUIDANCE_LAMBDA=1.0 GUIDANCE_M=5 START_INDEX=0 SKIP_FID=--skip-fid
+	$(MAKE) grid-guided
+
+.PHONY: smoke-guided-strong
+smoke-guided-strong: ## ADM128 smoke test with stronger uncertainty guidance for visual inspection
+	$(MAKE) download-adm128
+	$(MAKE) starting-data DATASET=imagenet128 N=4 EXTRA_SAMPLES=0
+	$(MAKE) run-imagenet-guided DATASET=imagenet128 N=4 BATCH_SIZE=1 GUIDANCE_STEPS=20 GUIDANCE_START_STEP=0 GUIDANCE_NUM_STEPS=20 GUIDANCE_PERCENTILE=0.70 GUIDANCE_LAMBDA=5.0 GUIDANCE_M=5 START_INDEX=0 SKIP_FID=--skip-fid
 	$(MAKE) grid-guided
 
 .PHONY: grid
@@ -150,7 +159,7 @@ grid: ## Save grid.png for RUN=<results/score-uncertainty/...>, defaults to late
 .PHONY: grid-guided
 grid-guided: ## Save guided and baseline grids for GUIDANCE_RUN=<results/uncertainty_guidance/...>, defaults to latest run
 	@test -n "$(GUIDANCE_RUN)" || (echo "No uncertainty_guidance run found"; exit 1)
-	$(UV_RUN) python -c 'import torch; from pathlib import Path; from torchvision.utils import save_image; run=Path("$(GUIDANCE_RUN)"); guided=torch.load(run / "gen_images_threshold.pth", map_location="cpu").float() / 255; save_image(guided, run / "grid_guided.png", nrow=min(5, guided.shape[0])); print(run / "grid_guided.png"); baseline_path=run / "gen_images.pth"; baseline=torch.load(baseline_path, map_location="cpu").float() / 255 if baseline_path.exists() else None; baseline is None or (save_image(baseline, run / "grid_baseline.png", nrow=min(5, baseline.shape[0])), print(run / "grid_baseline.png"))'
+	$(UV_RUN) python -c 'import torch; from pathlib import Path; from torchvision.utils import save_image; run=Path("$(GUIDANCE_RUN)"); guided=torch.load(run / "gen_images_threshold.pth", map_location="cpu").float(); save_image(guided / 255, run / "grid_guided.png", nrow=min(5, guided.shape[0])); print(run / "grid_guided.png"); baseline_path=run / "gen_images.pth"; baseline=torch.load(baseline_path, map_location="cpu").float() if baseline_path.exists() else None; baseline is None or (save_image(baseline / 255, run / "grid_baseline.png", nrow=min(5, baseline.shape[0])), save_image((baseline - guided).abs() / (baseline - guided).abs().max().clamp_min(1), run / "grid_abs_diff.png", nrow=min(5, guided.shape[0])), print(run / "grid_baseline.png"), print(run / "grid_abs_diff.png"))'
 
 .PHONY: shapes
 shapes: ## Print tensor shapes for RUN=<results/score-uncertainty/...>, defaults to latest run

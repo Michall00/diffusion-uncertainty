@@ -92,7 +92,7 @@ class DiffusionClassConditionalGuidedGradient:
                     prev_noisy_sample = output.prev_sample
                     beta_t_1 = self.scheduler.betas[t_1]
                     beta_t = self.scheduler.betas[t]
-                    alpha_hat_t = self.scheduler.alphas_cumprod[i]
+                    alpha_hat_t = self.scheduler.alphas_cumprod[t]
 
                     if ((start_step + num_steps) > i >= start_step):
 
@@ -111,16 +111,19 @@ class DiffusionClassConditionalGuidedGradient:
                             print('noisy_residual std:', noisy_residual.std().item())
                             print('noisy_residual min:', noisy_residual.amin().item())
                             print('noisy_residual max:', noisy_residual.amax().item())
+                            print('guidance mask fraction:', thresholded_map.mean().item())
                         gradient_direction: Literal[1] | Literal[-1] = 1 if self.gradient_direction == 'ascend' else -1
                         # post_noisy_residual = noisy_residual * self.lambda_update / update_scores * gradient_direction
                         # print(f'{alpha_hat_t.item()=}')
                         post_noisy_residual = noisy_residual  + gradient_direction * self.lambda_update * update_scores
+                        update_delta = (post_noisy_residual - noisy_residual).abs()
                         noisy_residual = noisy_residual * (1 - thresholded_map) + post_noisy_residual * thresholded_map
                         with torch.no_grad():
                             print('noisy_residual updated mean:', noisy_residual.mean().item())
                             print('noisy_residual updated std:', noisy_residual.std().item())
                             print('noisy_residual updated min:', noisy_residual.amin().item())
                             print('noisy_residual updated max:', noisy_residual.amax().item())
+                            print('masked update mean abs:', (update_delta * thresholded_map).mean().item())
                             
                         output = self.scheduler.step(noisy_residual, t, input)
                         prev_noisy_sample = output.prev_sample

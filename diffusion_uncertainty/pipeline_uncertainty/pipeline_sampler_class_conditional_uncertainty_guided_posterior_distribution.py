@@ -150,7 +150,7 @@ class DiffusionClassConditionalGuidedPosteriorDistribution:
                     output = self.scheduler.step(noisy_residual, t, input)
                     prev_noisy_sample = output.prev_sample
                     beta_t_1 = self.scheduler.betas[t_1]
-                    alpha_hat_t = self.scheduler.alphas_cumprod[i]
+                    alpha_hat_t = self.scheduler.alphas_cumprod[t]
 
                     if ((start_step + num_steps) >= i >= start_step):
 

@@ -90,6 +90,7 @@ def parse_args():
     argparser.add_argument('--start-index', type=int, default=0, help='starting index of the samples')
     argparser.add_argument('--guidance-type', type=str, default='gradient', help='type of guidance to use', dest='guidance_type', choices=['gradient', 'posterior', 'second_order'])
     argparser.add_argument('--seed', type=int, default=491, help='random seed')
+    argparser.add_argument('-M', '--num-uncertainty-samples', type=int, default=5, help='number of resampled scores used to estimate uncertainty', dest='M')
     argparser.add_argument('--percentile', type=float, default=0.95, help='percentile for the threshold', dest='percentile')
     argparser.add_argument('--skip-save', action='store_true', help='skip saving the generated images', dest='skip_save')
     argparser.add_argument('--skip-fid', action='store_true', help='skip FID computation and only save generated tensors/images', dest='skip_fid')
@@ -208,13 +209,13 @@ def main():
 
     if args.guidance_type == 'gradient':
         print('Using gradient guidance')
-        pipeline_sampler_threshold = DiffusionClassConditionalGuidedGradient(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, gradient_wrt=args.gradient_wrt, threshold_type=args.threshold_type, gradient_direction=args.gradient_direction, lambda_update=args.lambda_update)
+        pipeline_sampler_threshold = DiffusionClassConditionalGuidedGradient(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, gradient_wrt=args.gradient_wrt, threshold_type=args.threshold_type, gradient_direction=args.gradient_direction, lambda_update=args.lambda_update)
     elif args.guidance_type == 'posterior':
         print('Using posterior distribution guidance')
-        pipeline_sampler_threshold = DiffusionClassConditionalGuidedPosteriorDistribution(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, threshold_type=args.threshold_type)
+        pipeline_sampler_threshold = DiffusionClassConditionalGuidedPosteriorDistribution(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type)
     elif args.guidance_type == 'second_order':
         print('Using second order guidance')
-        pipeline_sampler_threshold = DiffusionClassConditionalGuidedSecondOrder(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, threshold_type=args.threshold_type)
+        pipeline_sampler_threshold = DiffusionClassConditionalGuidedSecondOrder(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type)
     else:
         raise ValueError(f'Unknown guidance type {args.guidance_type}')
 
@@ -236,6 +237,7 @@ def main():
         'start_step_threshold': args.start_step_guidance,
         'num_steps_threshold': args.num_steps_guidance,
         'start_index': args.start_index,
+        'M': args.M,
         'percentile': args.percentile,
         'use_percentile': args.use_percentile,
         'guidance_type': args.guidance_type,
@@ -263,12 +265,19 @@ def main():
 
         torch.save(gen_images_threshold, storage_images / 'gen_images_threshold.pth')
         torch.save(gen_images, storage_images / 'gen_images.pth')
+        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, M=args.M, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
+        diff_metrics = compute_guidance_diff_metrics(gen_images, gen_images_threshold)
+        results_guidance.update(diff_metrics)
+        save_abs_diff_grid(gen_images, gen_images_threshold, storage_images / 'grid_abs_diff.png')
 
         print('Saved config to', storage_images / 'args.yaml')
         print('Saved gen_images_threshold to', storage_images / 'gen_images_threshold.pth')
         print('Saved gen_images to', storage_images / 'gen_images.pth')
+        print('Saved abs diff grid to', storage_images / 'grid_abs_diff.png')
+        print('Guidance pixel mean abs diff:', diff_metrics['pixel_mean_abs_diff'])
+        print('Guidance pixel max abs diff:', diff_metrics['pixel_max_abs_diff'])
+        print('Guidance changed pixel fraction:', diff_metrics['pixel_changed_fraction'])
 
-        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
         if not args.skip_fid:
             fid_score = compute_fid_score_bayesdiff_from_dataset(gen_images=output['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
             fid_score_guidance = compute_fid_score_bayesdiff_from_dataset(gen_images=output_threshold['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
@@ -282,8 +291,13 @@ def main():
     else:
         storage_images = RESULTS / 'uncertainty_guidance'
 
-        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
+        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, M=args.M, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
         if not args.skip_ddim:
+            diff_metrics = compute_guidance_diff_metrics(output['gen_images'], output_threshold['gen_images'])
+            results_guidance.update(diff_metrics)
+            print('Guidance pixel mean abs diff:', diff_metrics['pixel_mean_abs_diff'])
+            print('Guidance pixel max abs diff:', diff_metrics['pixel_max_abs_diff'])
+            print('Guidance changed pixel fraction:', diff_metrics['pixel_changed_fraction'])
             if not args.skip_fid:
                 fid_score: float = compute_fid_score_bayesdiff_from_dataset(gen_images=output['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
                 print(f'FID score: {fid_score}')
@@ -303,6 +317,8 @@ def main():
         if batch_gen_images_threshold.dtype == torch.uint8:
             batch_gen_images_threshold = batch_gen_images_threshold.float() / 255.0
         save_image(batch_gen_images_threshold, storage_images / 'gen_images_threshold.png', nrow=8)
+        if not args.skip_ddim:
+            save_abs_diff_grid(output['gen_images'], output_threshold['gen_images'], storage_images / 'grid_abs_diff.png')
     results_path = RESULTS / 'uncertainty_guidance' / 'results.json'
     if not results_path.exists():
         results_fid = []
@@ -312,6 +328,23 @@ def main():
     results_fid.append(results_guidance)
     with open(results_path, 'w') as f:
         json.dump(results_fid, f, indent=4)
+
+
+def compute_guidance_diff_metrics(gen_images: torch.Tensor, gen_images_threshold: torch.Tensor) -> dict:
+    abs_diff = (gen_images.float() - gen_images_threshold.float()).abs()
+    return {
+        'pixel_mean_abs_diff': abs_diff.mean().item(),
+        'pixel_max_abs_diff': abs_diff.max().item(),
+        'pixel_changed_fraction': (abs_diff > 0).float().mean().item(),
+        'sample_mean_abs_diff': abs_diff.flatten(1).mean(dim=1).tolist(),
+    }
+
+
+def save_abs_diff_grid(gen_images: torch.Tensor, gen_images_threshold: torch.Tensor, path: Path):
+    abs_diff = (gen_images.float() - gen_images_threshold.float()).abs()
+    max_diff = abs_diff.max().clamp_min(1.0)
+    save_image((abs_diff / max_diff)[:64], path, nrow=8)
+
 
 if __name__ == '__main__':
     main()
