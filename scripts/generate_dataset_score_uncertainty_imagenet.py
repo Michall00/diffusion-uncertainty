@@ -30,7 +30,7 @@ import pytorch_lightning as pl
 import gzip
 
 @torch.no_grad()
-def generate_and_save(gpu_idx: int, args: argparse.Namespace, num_samples: int, dest_folder_datetime: Path):
+def generate_and_save(gpu_idx: int, args: argparse.Namespace, sample_ranges: list[tuple[int, int]], dest_folder_datetime: Path):
 
     # if num_samples % args.batch_size != 0:
     #     num_samples = num_samples + (args.batch_size - num_samples % args.batch_size)
@@ -48,12 +48,36 @@ def generate_and_save(gpu_idx: int, args: argparse.Namespace, num_samples: int, 
     if args.image_size == 128 and args.model_type == 'uvit':
         suffix = '_uvit'
 
-    index_range = slice(args.start_index + gpu_idx * num_samples, args.start_index + (gpu_idx + 1) * num_samples)
+    process_start, process_end = sample_ranges[gpu_idx]
+    index_range = slice(args.start_index + process_start, args.start_index + process_end)
+    required_samples = args.start_index + process_end
 
-    y = torch.load(DIFFUSION_STARTING_POINTS / f'imagenet{args.image_size}{suffix}' / 'y.pth', map_location='cpu')[index_range]
+    starting_points_folder = DIFFUSION_STARTING_POINTS / f'imagenet{args.image_size}{suffix}'
+    x_t_path = starting_points_folder / 'X_T.pth'
+    y_path = starting_points_folder / 'y.pth'
+    missing_paths = [str(path) for path in (x_t_path, y_path) if not path.exists()]
+    if missing_paths:
+        raise FileNotFoundError(
+            'Missing diffusion starting-point files: '
+            + ', '.join(missing_paths)
+            + '\nGenerate them first, for example:\n'
+            + f'uv run --extra cu118 --group dev python scripts/generate_diffusion_starting_data.py '
+              f'--datasets imagenet{args.image_size}{suffix} --num-samples {required_samples} --extra-samples 0'
+        )
+
+    y_all = torch.load(y_path, map_location='cpu')
+    x_t_all = torch.load(x_t_path, map_location='cpu')
+    if y_all.shape[0] < required_samples or x_t_all.shape[0] < required_samples:
+        raise ValueError(
+            f'{starting_points_folder} contains too few starting points. '
+            f'Need at least {required_samples}, got X_T={x_t_all.shape[0]} and y={y_all.shape[0]}. '
+            f'Regenerate with --num-samples {required_samples}.'
+        )
+
+    y = y_all[index_range]
     y = y.to(device)
 
-    X_T = torch.load(DIFFUSION_STARTING_POINTS / f'imagenet{args.image_size}{suffix}' / 'X_T.pth', map_location='cpu')[index_range]
+    X_T = x_t_all[index_range]
     X_T = X_T.to(device)
 
     if args.model_type == 'unet':
@@ -88,7 +112,8 @@ def generate_and_save(gpu_idx: int, args: argparse.Namespace, num_samples: int, 
     print('intermediates', intermediates.keys())
 
     torch.save(uc_scheduler.timesteps, dest_folder_datetime / f'timestep_{gpu_idx}.pth')
-    torch.save(intermediates['score'], dest_folder_datetime / 'score.pth')
+    score_name = f'score_{gpu_idx}.pth' if len(sample_ranges) > 1 else 'score.pth'
+    torch.save(intermediates['score'], dest_folder_datetime / score_name)
     torch.save(intermediates['uncertainty'], dest_folder_datetime / f'uncertainty_{args.scheduler_type}_{gpu_idx}.pth')
     torch.save(intermediates['gen_images'], dest_folder_datetime / f'gen_images_{gpu_idx}.pth')
 
@@ -135,11 +160,26 @@ def main():
 
 
     num_gpus = torch.cuda.device_count()
+    if num_gpus == 0:
+        raise RuntimeError('No CUDA devices found. This script requires a GPU.')
+
+    nprocs = min(num_gpus, args.num_samples) if args.multi_gpu else 1
+    base_samples = args.num_samples // nprocs
+    remainder = args.num_samples % nprocs
+    sample_ranges = []
+    sample_start = 0
+    for process_idx in range(nprocs):
+        process_count = base_samples + (1 if process_idx < remainder else 0)
+        sample_ranges.append((sample_start, sample_start + process_count))
+        sample_start += process_count
+
     print('num_gpus', num_gpus)
+    print('nprocs', nprocs)
+    print('sample_ranges', sample_ranges)
     torch.multiprocessing.spawn(
         fn=generate_and_save,
-        args=(args, args.num_samples // num_gpus, dest_folder_datetime),
-        nprocs=num_gpus,
+        args=(args, sample_ranges, dest_folder_datetime),
+        nprocs=nprocs,
         join=True,
     )
     print('Done')
@@ -187,20 +227,24 @@ def parse_args():
         argparser.set_defaults(**args.__dict__)
         print('Set defaults from config file')
         args = argparser.parse_args()
-    else:
-        assert args.image_size is not None, '--image-size must be specified'
-        assert args.scheduler_type is not None, '--scheduler-type must be specified'
-        if args.model_type is None:
-            args.model_type = 'unet' if args.image_size in (64, 128) else 'uvit'
-            print(f'--model-type not specified, using {args.model_type!r} for image_size={args.image_size}')
-        if args.start_index is None:
-            args.start_index = 0
-            print('--start-index not specified, using 0')
+
+    assert args.image_size is not None, '--image-size must be specified'
+    assert args.scheduler_type is not None, '--scheduler-type must be specified'
+    if args.model_type is None:
+        args.model_type = 'unet' if args.image_size in (64, 128) else 'uvit'
+        print(f'--model-type not specified, using {args.model_type!r} for image_size={args.image_size}')
+    if args.start_index is None:
+        args.start_index = 0
+        print('--start-index not specified, using 0')
 
     if args.model_type == 'unet' and args.image_size not in (64, 128):
         raise ValueError('--model-type unet only supports --image-size 64 or 128')
     if args.model_type == 'uvit' and args.image_size not in (256, 512):
         raise ValueError('--model-type uvit only supports --image-size 256 or 512')
+    if args.num_samples <= 0:
+        raise ValueError('--num-samples must be positive')
+    if args.start_index < 0:
+        raise ValueError('--start-index must be non-negative')
 
     return args
     

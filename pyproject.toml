@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "diffusion-uncertainty"
 version = "0.0.1"
 description = 'Implementation of "Diffusion Model Guided Sampling with Pixel-Wise Aleatoric Uncertainty Estimation"'
-readme = "readme.md"
+readme = "README.md"
 requires-python = ">=3.10,<3.12"
 license = "MIT"
 keywords = ["deep-learning", "diffusion", "pytorch", "uncertainty"]

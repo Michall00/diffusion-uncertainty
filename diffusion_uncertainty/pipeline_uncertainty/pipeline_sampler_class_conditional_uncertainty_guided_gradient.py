@@ -114,7 +114,7 @@ class DiffusionClassConditionalGuidedGradient:
                         gradient_direction: Literal[1] | Literal[-1] = 1 if self.gradient_direction == 'ascend' else -1
                         # post_noisy_residual = noisy_residual * self.lambda_update / update_scores * gradient_direction
                         # print(f'{alpha_hat_t.item()=}')
-                        post_noisy_residual = noisy_residual  + self.lambda_update * update_scores
+                        post_noisy_residual = noisy_residual  + gradient_direction * self.lambda_update * update_scores
                         noisy_residual = noisy_residual * (1 - thresholded_map) + post_noisy_residual * thresholded_map
                         with torch.no_grad():
                             print('noisy_residual updated mean:', noisy_residual.mean().item())

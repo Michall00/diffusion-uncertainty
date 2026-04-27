@@ -30,10 +30,8 @@ from diffusion_uncertainty.init_model import instantiate_model_scheduler
 from diffusion_uncertainty.paths import CONFIG, FID, RESULTS, ROOT, THRESHOLD, DIFFUSION_STARTING_POINTS
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_flip import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyFlip
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyUncertainty
-from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty_single import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyUncertaintySingle
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_flip_grad import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyFlipGrad
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty_image import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyUncertaintyImage
-from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty_single_score import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyUncertaintySingleScore
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty_centered import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyUncertaintyCentered
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty_centered_d import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyUncertaintyCenteredD
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty_zigzag_centered import DDIMSchedulerUncertaintyImagenetClassConditioned as DDIMSchedulerUncertaintyUncertaintyZigZagCentered
@@ -94,6 +92,7 @@ def parse_args():
     argparser.add_argument('--seed', type=int, default=491, help='random seed')
     argparser.add_argument('--percentile', type=float, default=0.95, help='percentile for the threshold', dest='percentile')
     argparser.add_argument('--skip-save', action='store_true', help='skip saving the generated images', dest='skip_save')
+    argparser.add_argument('--skip-fid', action='store_true', help='skip FID computation and only save generated tensors/images', dest='skip_fid')
     argparser.add_argument('--checkpoint', '--checkpoint-path', type=str, help='path to the model checkpoint', default=None, dest='checkpoint_path')
     argparser.add_argument('--use-percentile', action='store_true', help='use the percentile instead of saved threshold')
     argparser.add_argument('--skip-ddim', action='store_true', help='skip the DDIM sampling')
@@ -221,12 +220,12 @@ def main():
 
 
     with torch.autocast('cuda'):
-        ddim_sampler.set_timesteps(generation_steps // 4)
+        ddim_sampler.set_timesteps(generation_steps)
 
         if not args.skip_ddim:
             output = pipeline_sampler_ddim(X_T=x_T, y=y)
-        print(f'using {generation_steps//4} steps for DDIM with guidance')
-        ddim_sampler.set_timesteps(generation_steps // 4)
+        print(f'using {generation_steps} steps for DDIM with guidance')
+        ddim_sampler.set_timesteps(generation_steps)
         output_threshold = pipeline_sampler_threshold(X_T=x_T, y=y, start_step=args.start_step_guidance, num_steps=args.num_steps_guidance)
 
     config = ({ 
@@ -240,6 +239,7 @@ def main():
         'percentile': args.percentile,
         'use_percentile': args.use_percentile,
         'guidance_type': args.guidance_type,
+        'skip_fid': args.skip_fid,
     })
 
     if not args.skip_save and not args.skip_ddim:
@@ -268,28 +268,36 @@ def main():
         print('Saved gen_images_threshold to', storage_images / 'gen_images_threshold.pth')
         print('Saved gen_images to', storage_images / 'gen_images.pth')
 
-        fid_score = compute_fid_score_bayesdiff_from_dataset(gen_images=output['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
-        fid_score_guidance = compute_fid_score_bayesdiff_from_dataset(gen_images=output_threshold['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
-        # fid_score, fid_score_guidance = compute_fid_score_gen_images_guidance(storage_images)
-        print(f'FID score: {fid_score}')
-        print(f'FID score with guidance: {fid_score_guidance}')
-        
-        results_guidance = dict(fid_score=fid_score, fid_score_guidance=fid_score_guidance, dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, percentile=args.percentile, use_percentile=args.use_percentile)
+        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
+        if not args.skip_fid:
+            fid_score = compute_fid_score_bayesdiff_from_dataset(gen_images=output['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
+            fid_score_guidance = compute_fid_score_bayesdiff_from_dataset(gen_images=output_threshold['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
+            # fid_score, fid_score_guidance = compute_fid_score_gen_images_guidance(storage_images)
+            print(f'FID score: {fid_score}')
+            print(f'FID score with guidance: {fid_score_guidance}')
+            results_guidance['fid_score'] = fid_score
+            results_guidance['fid_score_guidance'] = fid_score_guidance
+        else:
+            print('Skipping FID computation')
     else:
         storage_images = RESULTS / 'uncertainty_guidance'
 
-        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, percentile=args.percentile, use_percentile=args.use_percentile)
+        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
         if not args.skip_ddim:
-            fid_score: float = compute_fid_score_bayesdiff_from_dataset(gen_images=output['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
-            print(f'FID score: {fid_score}')
-            results_guidance['fid_score'] = fid_score
+            if not args.skip_fid:
+                fid_score: float = compute_fid_score_bayesdiff_from_dataset(gen_images=output['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
+                print(f'FID score: {fid_score}')
+                results_guidance['fid_score'] = fid_score
             batch_gen_images = output['gen_images'][:64]
             if batch_gen_images.dtype == torch.uint8:
                 batch_gen_images = batch_gen_images.float() / 255.0
             save_image(batch_gen_images, fp=storage_images / 'gen_images.png', nrow=8)
-        fid_score_guidance = compute_fid_score_bayesdiff_from_dataset(gen_images=output_threshold['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
-        print(f'FID score with guidance: {fid_score_guidance}')
-        results_guidance['fid_score_guidance'] = fid_score_guidance
+        if not args.skip_fid:
+            fid_score_guidance = compute_fid_score_bayesdiff_from_dataset(gen_images=output_threshold['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
+            print(f'FID score with guidance: {fid_score_guidance}')
+            results_guidance['fid_score_guidance'] = fid_score_guidance
+        else:
+            print('Skipping FID computation')
 
         batch_gen_images_threshold = output_threshold['gen_images'][:64]
         if batch_gen_images_threshold.dtype == torch.uint8:
