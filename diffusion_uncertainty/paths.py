@@ -3,7 +3,7 @@ from re import I
 from path import Path
 from regex import B
 
-ROOT = Path(__file__).parent.parent.parent
+ROOT = Path(__file__).parent.parent
 
 CONFIG = ROOT / 'config'
 if not CONFIG.exists():
