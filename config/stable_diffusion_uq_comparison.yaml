@@ -1,0 +1,99 @@
+# config/stable_diffusion_uq_comparison.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Configuration for compare_uq_sd.py  / evaluate_uq_sd.py experiments.
+# Usage:
+#   uv run --extra cpu python scripts/compare_uq_sd.py $(python -c "
+#       import yaml, sys
+#       cfg = yaml.safe_load(open('config/stable_diffusion_uq_comparison.yaml'))
+#       d = cfg['default']
+#       print(f\"--prompt '{d['prompt']}' --seed {d['seeds'][0]} --num-steps {d['num_steps']['mps']}\")")
+# ─────────────────────────────────────────────────────────────────────────────
+
+model_id: "runwayml/stable-diffusion-v1-5"
+
+default:
+  # Prompt used when running a single quick test
+  prompt: "a photo of a cat sitting on a velvet chair"
+
+  # Seeds to evaluate per prompt (for averaging / variance across seeds)
+  seeds: [42, 123, 777]
+
+  # Number of DDIM steps per device type
+  num_steps:
+    mps: 10       # fast local test
+    cuda: 30      # full quality on VM
+    cpu: 5        # smoke test only
+
+  guidance_scale: 7.5
+  height: 512
+  width: 512
+
+  # Guidance window: which denoising steps apply UQ guidance
+  guidance_start_step: 0
+  guidance_n_steps: 20   # for cuda/30-step run; adjust proportionally for MPS
+
+  # Guidance strength
+  percentile: 0.95        # fraction of HIGH-uncertainty pixels to correct
+  lr: 1.0                 # correction magnitude [0, 1]
+
+  # Laplace fitting parameters
+  n_ref_latents: 3        # reference z0 latents for Hessian accumulation
+  n_laplace_pairs: 50     # (z_t, eps) pairs for accumulation (more = better, slower)
+
+  # MC sampling for aleatoric mode
+  num_mc_samples: 5
+
+  # Methods to compare in a single run
+  methods:
+    - baseline
+    - aleatoric
+    - gradient
+    - resampling
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Diverse prompts for full evaluation
+# ─────────────────────────────────────────────────────────────────────────────
+prompts:
+  # Natural scenes
+  - "a serene mountain lake at sunset with reflections"
+  - "a dense foggy forest with light rays breaking through the trees"
+  - "a sandy beach with turquoise water and palm trees"
+
+  # Objects / still life
+  - "a ceramic teapot on a wooden table with soft studio lighting"
+  - "a stack of old leather-bound books next to a burning candle"
+
+  # Animals
+  - "a golden retriever puppy playing in autumn leaves"
+  - "a majestic eagle soaring above snowy mountain peaks"
+
+  # Portraits (no faces — avoids NSFW checker)
+  - "a silhouette of a person standing on a hilltop at dusk"
+
+  # Architecture
+  - "a gothic cathedral interior with stained glass windows bathed in light"
+  - "a cozy wooden cabin in a snow-covered pine forest at night"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-method parameter overrides (merged over defaults at runtime)
+# ─────────────────────────────────────────────────────────────────────────────
+method_overrides:
+  baseline:
+    guidance_n_steps: 0  # no guidance at all
+
+  aleatoric:
+    num_mc_samples: 5
+    lr: 1.0
+    percentile: 0.95
+
+  gradient:
+    lr: 1.0
+    percentile: 0.95
+    n_ref_latents: 3
+    n_laplace_pairs: 50
+
+  resampling:
+    lr: 0.5            # softer injection for resampling to avoid artifacts
+    percentile: 0.90   # slightly wider mask
+    n_ref_latents: 3
+    n_laplace_pairs: 50
