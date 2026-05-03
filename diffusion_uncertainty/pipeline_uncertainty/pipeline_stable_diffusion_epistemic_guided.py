@@ -46,6 +46,7 @@ from diffusion_uncertainty.uq_laplace.core import (
     ManualDiagLaplace,
     generate_reference_latents,
 )
+from diffusion_uncertainty.uq_laplace.subnet_laplace import SubnetLaplace
 from diffusion_uncertainty.uq_laplace.gamma2 import (
     compute_gamma2_llla,
     ddim_transport_factors,
@@ -61,8 +62,9 @@ class UQComparisonOutput:
     image: torch.Tensor          # (1, 3, H, W) float32 [0, 1]
     uncertainty_map: torch.Tensor | None  # (1, C, H, W) γ² at last guidance step
     u_proj: torch.Tensor | None  # (1, C, H, W) FLARE-accumulated epistemic projection
-    fitted_laplace: ManualDiagLaplace | None  # reusable for subsequent runs
+    fitted_laplace: ManualDiagLaplace | SubnetLaplace | None  # reusable for subsequent runs
     method: str
+    laplace_mode: str = "last_layer"
 
 
 GuidanceMode = Literal["none", "aleatoric", "gradient", "resampling"]
@@ -154,7 +156,10 @@ class StableDiffusionPipelineUQComparison(StableDiffusionPipeline):
         n_ref_latents: int = 3,
         n_laplace_pairs: int = 50,
         num_mc_samples: int = 5,
-        pre_fitted_laplace: ManualDiagLaplace | None = None,
+        laplace_mode: Literal["last_layer", "subnet"] = "last_layer",
+        n_mc_subnet: int = 5,
+        subnet_max_params: int = 20_000,
+        pre_fitted_laplace: ManualDiagLaplace | SubnetLaplace | None = None,
     ) -> UQComparisonOutput:
         """Run SD v1.5 with the specified UQ guidance mode.
 
@@ -202,15 +207,18 @@ class StableDiffusionPipelineUQComparison(StableDiffusionPipeline):
 
         # ── 4. Laplace fitting (gradient / resampling modes only) ───────────
         feat_cap: FeatureCapture | None = None
-        laplace: ManualDiagLaplace | None = None
-        fitted_laplace: ManualDiagLaplace | None = None
+        laplace: ManualDiagLaplace | SubnetLaplace | None = None
+        fitted_laplace: ManualDiagLaplace | SubnetLaplace | None = None
 
         if guidance_mode in {"gradient", "resampling"}:
-            feat_cap = FeatureCapture(self.unet.conv_out)
+            # feat_cap only needed for last_layer mode (hooks into conv_out)
+            if laplace_mode == "last_layer":
+                feat_cap = FeatureCapture(self.unet.conv_out)
 
             if pre_fitted_laplace is not None:
                 laplace = pre_fitted_laplace
-                print(f"[UQ] Reusing pre-fitted Laplace (prior_prec={laplace.prior_prec:.3e})")
+                print(f"[UQ] Reusing pre-fitted Laplace ({type(laplace).__name__}, "
+                      f"prior_prec={laplace.prior_prec:.3e})")
             else:
                 print(f"[UQ] Generating {n_ref_latents} reference latents...")
                 z0_ref = generate_reference_latents(
@@ -228,24 +236,32 @@ class StableDiffusionPipelineUQComparison(StableDiffusionPipeline):
                 self.scheduler.set_timesteps(num_inference_steps, device=device)
                 timesteps = list(self.scheduler.timesteps)
 
-                print(f"[UQ] Fitting Laplace ({n_laplace_pairs} pairs)...")
-                # prior_prec=1e-3: small value gives larger posterior_variance,
-                # more dynamic range in gamma2 (spatial variation more pronounced).
-                # Guidance functions normalize gamma2 internally so the absolute
-                # value of prior_prec does not affect correction magnitude.
-                laplace = ManualDiagLaplace(self.unet.conv_out, prior_prec=1e-3)
-                laplace.fit(
-                    unet=self.unet,
-                    feat_cap=feat_cap,
-                    z0_set=z0_ref,
-                    abar=abar,
-                    cond_emb=cond_emb,
-                    device=device,
-                    T=1000,
-                    n_pairs=n_laplace_pairs,
-                )
-                # Do NOT call optimize_prior() here: it yields prior_prec~860
-                # which collapses gamma2 to near-zero, killing spatial variation.
+                print(f"[UQ] Fitting Laplace ({laplace_mode}, {n_laplace_pairs} pairs)...")
+                if laplace_mode == "last_layer":
+                    laplace = ManualDiagLaplace(self.unet.conv_out, prior_prec=1e-3)
+                    laplace.fit(
+                        unet=self.unet,
+                        feat_cap=feat_cap,
+                        z0_set=z0_ref,
+                        abar=abar,
+                        cond_emb=cond_emb,
+                        device=device,
+                        T=1000,
+                        n_pairs=n_laplace_pairs,
+                    )
+                else:  # subnet
+                    laplace = SubnetLaplace(
+                        self.unet, prior_prec=1e-3, max_params=subnet_max_params
+                    )
+                    laplace.fit(
+                        unet=self.unet,
+                        z0_set=z0_ref,
+                        abar=abar,
+                        cond_emb=cond_emb,
+                        device=device,
+                        T=1000,
+                        n_pairs=n_laplace_pairs,
+                    )
                 print(f"[UQ] Laplace done. prior_prec={laplace.prior_prec:.3e}")
                 fitted_laplace = laplace
 
@@ -276,12 +292,20 @@ class StableDiffusionPipelineUQComparison(StableDiffusionPipeline):
                         alpha_hat_t, guidance_scale, num_mc_samples,
                     )
                 else:
-                    assert feat_cap is not None and laplace is not None
-                    cond_feats = feat_cap.features[1:2] if feat_cap.features is not None and feat_cap.features.shape[0] > 1 else feat_cap.features
-                    if cond_feats is not None:
-                        gamma2 = compute_gamma2_llla(cond_feats, laplace.posterior_variance, self.unet.conv_out)
-                    else:
-                        gamma2 = torch.zeros_like(noise_pred, dtype=torch.float32)
+                    assert laplace is not None
+                    if laplace_mode == "last_layer":
+                        assert feat_cap is not None
+                        cond_feats = feat_cap.features[1:2] if feat_cap.features is not None and feat_cap.features.shape[0] > 1 else feat_cap.features
+                        if cond_feats is not None:
+                            gamma2 = compute_gamma2_llla(cond_feats, laplace.posterior_variance, self.unet.conv_out)
+                        else:
+                            gamma2 = torch.zeros_like(noise_pred, dtype=torch.float32)
+                    else:  # subnet: MC weight perturbation
+                        assert isinstance(laplace, SubnetLaplace)
+                        gamma2 = laplace.compute_gamma2(
+                            self.unet, latents, t, cfg_emb,
+                            guidance_scale, n_mc=n_mc_subnet, device=device,
+                        )
 
                 last_gamma2 = gamma2
 
@@ -323,4 +347,5 @@ class StableDiffusionPipelineUQComparison(StableDiffusionPipeline):
             u_proj=u_proj_out.cpu() if u_proj_out is not None else None,
             fitted_laplace=fitted_laplace,
             method=guidance_mode,
+            laplace_mode=laplace_mode,
         )

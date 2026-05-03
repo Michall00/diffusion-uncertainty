@@ -11,6 +11,7 @@ Supports three guidance modes for comparison:
 
 Public API:
     ManualDiagLaplace
+    SubnetLaplace
     FeatureCapture
     generate_reference_latents
     compute_gamma2_llla
@@ -34,6 +35,7 @@ from diffusion_uncertainty.uq_laplace.core import (
     ManualDiagLaplace,
     generate_reference_latents,
 )
+from diffusion_uncertainty.uq_laplace.subnet_laplace import SubnetLaplace
 from diffusion_uncertainty.uq_laplace.gamma2 import (
     compute_gamma2_llla,
     ddim_transport_factors,
@@ -52,6 +54,7 @@ from diffusion_uncertainty.uq_laplace.plotting import (
 __all__ = [
     "FeatureCapture",
     "ManualDiagLaplace",
+    "SubnetLaplace",
     "generate_reference_latents",
     "compute_gamma2_llla",
     "ddim_transport_factors",

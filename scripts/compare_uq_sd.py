@@ -65,6 +65,13 @@ def parse_args() -> argparse.Namespace:
                    help="Regression pairs for Laplace fitting")
     p.add_argument("--num-mc", type=int, default=5,
                    help="MC forward passes for aleatoric variance")
+    p.add_argument("--laplace-mode", type=str, default="last_layer",
+                   choices=["last_layer", "subnet"],
+                   help="last_layer=conv_out GGN; subnet=MC weight perturbation on up_blocks")
+    p.add_argument("--n-mc-subnet", type=int, default=5,
+                   help="MC forward passes per step for subnet gamma2")
+    p.add_argument("--subnet-max-params", type=int, default=20_000,
+                   help="Max parameters to include in subnet Laplace")
     p.add_argument("--device", type=str, default=None,
                    help="Device: cuda | mps | cpu (auto-detect if not set)")
     p.add_argument("--model-id", type=str, default=MODEL_ID)
@@ -158,6 +165,9 @@ def main() -> None:
             n_ref_latents=args.n_ref,
             n_laplace_pairs=args.n_pairs,
             num_mc_samples=args.num_mc,
+            laplace_mode=args.laplace_mode,
+            n_mc_subnet=args.n_mc_subnet,
+            subnet_max_params=args.subnet_max_params,
             pre_fitted_laplace=shared_laplace if method in {"resampling"} else None,
         )
 
