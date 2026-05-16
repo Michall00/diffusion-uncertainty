@@ -1,0 +1,29 @@
+program: scripts/sweep_uq_sd.py
+method: bayes
+metric:
+  goal: maximize
+  name: delta_clip
+
+early_terminate:
+  type: hyperband
+  min_iter: 1
+
+parameters:
+  method:
+    value: "aleatoric"
+
+  guidance_start_step:
+    values: [0, 2, 4, 6]
+
+  guidance_n_steps:
+    values: [4, 6, 8, 12]
+
+  # Fixed
+  model_id:
+    value: "CompVis/stable-diffusion-v1-4"
+  num_steps:
+    value: 20
+  guidance_scale:
+    value: 7.5
+  num_mc:
+    value: 5

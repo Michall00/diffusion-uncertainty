@@ -1,0 +1,51 @@
+program: scripts/sweep_uq_sd.py
+method: bayes
+metric:
+  goal: maximize
+  name: delta_clip
+
+early_terminate:
+  type: hyperband
+  min_iter: 1
+
+parameters:
+  method:
+    value: "resampling"
+
+  lr:
+    distribution: log_uniform_values
+    min: 0.05
+    max: 0.8
+
+  percentile:
+    distribution: uniform
+    min: 0.75
+    max: 0.97
+
+  guidance_start_step:
+    values: [0, 2, 4, 6]
+
+  guidance_n_steps:
+    values: [4, 6, 8, 12]
+
+  n_pairs:
+    values: [5, 10, 20, 50]
+
+  laplace_mode:
+    values: ["last_layer", "subnet"]
+
+  # Fixed
+  model_id:
+    value: "CompVis/stable-diffusion-v1-4"
+  num_steps:
+    value: 20
+  guidance_scale:
+    value: 7.5
+  n_ref:
+    value: 1
+  num_mc:
+    value: 3
+  n_mc_subnet:
+    value: 4
+  subnet_max_params:
+    value: 20000
