@@ -15,7 +15,7 @@ from diffusion_uncertainty.paths import AUSE, CIFAR10, CONFIG, DIFFUSION_STARTIN
 from diffusion_uncertainty.pipeline_uncertainty.pipeline_sampler_class_conditional_uncertainty import DiffusionClassConditionalWithUncertainty
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty_centered import DDIMSchedulerUncertainty
 from diffusion_uncertainty.utils import DATASET_IMAGE_SIZE, load_X_T, load_y, predict_model
-from scripts.generate_images_with_uncertainty_percentile import instantiate_uc_scheduler
+from diffusion_uncertainty.schedulers_uncertainty.get_uncertainty_scheduler import instatiate_uc_scheduler
 import pytorch_lightning as pl
 from tqdm import tqdm
 
