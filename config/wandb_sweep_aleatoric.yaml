@@ -1,13 +1,9 @@
 program: scripts/sweep_uq_sd.py
-method: bayes
-run_cap: 30
+method: grid
+run_cap: 16
 metric:
   goal: maximize
   name: delta_clip
-
-early_terminate:
-  type: hyperband
-  min_iter: 1
 
 parameters:
   method:
