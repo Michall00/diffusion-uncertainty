@@ -19,6 +19,7 @@
   - [Generate uncertainty maps](#generate-uncertainty-maps)
   - [FID Calculation](#fid-calculation)
   - [Uncertainty guidance](#uncertainty-guidance)
+  - [WandB Sweeps](#wandb-sweeps)
   - [Citation](#citation)
   - [License](#license)
   - [Scripts](#scripts)
@@ -200,6 +201,22 @@ options:
   --strength STRENGTH   strength of the uncertainty guidance (default: 0.99)
   --config CONFIG       Path to the configuration file
 ```
+## WandB Sweeps
+
+```bash
+# Create a sweep (choose one config)
+uv run --extra cu118 python scripts/sweep_uq_sd.py --create-sweep --config config/wandb_sweep_aleatoric.yaml
+uv run --extra cu118 python scripts/sweep_uq_sd.py --create-sweep --config config/wandb_sweep_gradient.yaml
+uv run --extra cu118 python scripts/sweep_uq_sd.py --create-sweep --config config/wandb_sweep_resampling.yaml
+
+# Start an agent
+uv run --extra cu118 python scripts/sweep_uq_sd.py --sweep-id <SWEEP_ID>
+
+# Or via wandb CLI
+wandb sweep config/wandb_sweep_gradient.yaml
+wandb agent <entity>/<project>/<sweep-id>
+```
+
 ## Citation
 
     @InProceedings{De_Vita_2025_WACV,
