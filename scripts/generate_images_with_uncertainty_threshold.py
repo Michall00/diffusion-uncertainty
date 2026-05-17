@@ -43,6 +43,7 @@ from diffusion_uncertainty.uvit.uvit import UViT
 from diffusion_uncertainty.uvit.uvit_ae import UViTAE
 from diffusers.models.unets import UNet2DModel
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from scripts.compute_dataset_fid import calculate_activation_statistics_dataset, calculate_frechet_distance, instantiate_inception_v3
 from torchvision.utils import make_grid
 from torchvision.utils import save_image
@@ -84,6 +85,7 @@ def parse_args():
     argparser.add_argument('--on-cpu', action='store_true', dest='on_cpu')
     argparser.add_argument('--scheduler-type', '--scheduler', dest='scheduler_type', type=str, default='uncertainty')
     argparser.add_argument('--num-steps', default=20, type=int, help='number of steps for the diffusion used when use_percentile is not set', dest='num_steps')
+    argparser.add_argument('--sampler', type=str, default='ddim', choices=['ddim', 'ddpm'], help='sampler used for baseline and guidance')
     argparser.add_argument('--dataset-folder', '--dataset', type=str, required=False, help='path to the dataset folder containing the uncertainty and gen_images files', dest='dataset_name')
     argparser.add_argument('--start-step-threshold', '--start-step', '--start-step-guidance',  type=int, default=0, help='step to start estimating the threshold', dest='start_step_guidance')
     argparser.add_argument('--num-steps-threshold', '--num-steps-uc', '--num-steps-guidance', type=int, default=20, help='number of steps to estimate the threshold', dest='num_steps_guidance')
@@ -199,34 +201,37 @@ def main():
 
 
 
-    ddim_sampler = DDIMScheduler.from_config(config=scheduler.config)
-    ddim_sampler.set_timesteps(generation_steps)
+    if args.sampler == 'ddpm':
+        sampler = DDPMScheduler.from_config(config=scheduler.config)
+    else:
+        sampler = DDIMScheduler.from_config(config=scheduler.config)
+    sampler.set_timesteps(generation_steps)
 
     # uc_scheduler = instatiate_uncertainty_scheduler(args, y, model, scheduler)
     # uc_scheduler.set_timesteps(generation_steps)
 
-    pipeline_sampler_ddim = DiffusionClassConditional(model, ddim_sampler, image_size, device, args.batch_size, seed)
+    pipeline_sampler_ddim = DiffusionClassConditional(model, sampler, image_size, device, args.batch_size, seed)
 
     if args.guidance_type == 'gradient':
         print('Using gradient guidance')
-        pipeline_sampler_threshold = DiffusionClassConditionalGuidedGradient(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, gradient_wrt=args.gradient_wrt, threshold_type=args.threshold_type, gradient_direction=args.gradient_direction, lambda_update=args.lambda_update)
+        pipeline_sampler_threshold = DiffusionClassConditionalGuidedGradient(model, sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, gradient_wrt=args.gradient_wrt, threshold_type=args.threshold_type, gradient_direction=args.gradient_direction, lambda_update=args.lambda_update)
     elif args.guidance_type == 'posterior':
         print('Using posterior distribution guidance')
-        pipeline_sampler_threshold = DiffusionClassConditionalGuidedPosteriorDistribution(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type)
+        pipeline_sampler_threshold = DiffusionClassConditionalGuidedPosteriorDistribution(model, sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type)
     elif args.guidance_type == 'second_order':
         print('Using second order guidance')
-        pipeline_sampler_threshold = DiffusionClassConditionalGuidedSecondOrder(model, ddim_sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type)
+        pipeline_sampler_threshold = DiffusionClassConditionalGuidedSecondOrder(model, sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type)
     else:
         raise ValueError(f'Unknown guidance type {args.guidance_type}')
 
 
     with torch.autocast('cuda'):
-        ddim_sampler.set_timesteps(generation_steps)
+        sampler.set_timesteps(generation_steps)
 
         if not args.skip_ddim:
             output = pipeline_sampler_ddim(X_T=x_T, y=y)
-        print(f'using {generation_steps} steps for DDIM with guidance')
-        ddim_sampler.set_timesteps(generation_steps)
+        print(f'using {generation_steps} steps for {args.sampler.upper()} with guidance')
+        sampler.set_timesteps(generation_steps)
         output_threshold = pipeline_sampler_threshold(X_T=x_T, y=y, start_step=args.start_step_guidance, num_steps=args.num_steps_guidance)
 
     config = ({ 
@@ -242,6 +247,7 @@ def main():
         'use_percentile': args.use_percentile,
         'guidance_type': args.guidance_type,
         'skip_fid': args.skip_fid,
+        'sampler': args.sampler,
     })
 
     if not args.skip_save and not args.skip_ddim:
@@ -265,7 +271,7 @@ def main():
 
         torch.save(gen_images_threshold, storage_images / 'gen_images_threshold.pth')
         torch.save(gen_images, storage_images / 'gen_images.pth')
-        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, M=args.M, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
+        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, sampler=args.sampler, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, M=args.M, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
         diff_metrics = compute_guidance_diff_metrics(gen_images, gen_images_threshold)
         results_guidance.update(diff_metrics)
         save_abs_diff_grid(gen_images, gen_images_threshold, storage_images / 'grid_abs_diff.png')
@@ -291,7 +297,7 @@ def main():
     else:
         storage_images = RESULTS / 'uncertainty_guidance'
 
-        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, M=args.M, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
+        results_guidance = dict(dataset=args.dataset_name, scheduler_type=args.scheduler_type, sampler=args.sampler, num_samples=args.num_samples, seed=seed, start_step_threshold=args.start_step_guidance, num_steps_threshold=args.num_steps_guidance, start_index=args.start_index, M=args.M, percentile=args.percentile, use_percentile=args.use_percentile, guidance_type=args.guidance_type, skip_fid=args.skip_fid)
         if not args.skip_ddim:
             diff_metrics = compute_guidance_diff_metrics(output['gen_images'], output_threshold['gen_images'])
             results_guidance.update(diff_metrics)

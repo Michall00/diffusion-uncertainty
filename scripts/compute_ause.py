@@ -99,6 +99,7 @@ def main():
     indices = torch.randperm(len(dataset))
     if args.num_samples is not None:
         indices = indices[:args.num_samples]
+    num_eval_samples = len(indices)
     
     # Use SubsetRandomSampler with the permuted indices
     sampler = torch.utils.data.SubsetRandomSampler(indices)
@@ -113,9 +114,9 @@ def main():
     if not ause_dataset.exists():
         ause_dataset.mkdir()
 
-    X_0_list = torch.zeros(len(dataset), 3, image_size, image_size, device='cpu', dtype=torch.float16)
-    X_0_recon_list = torch.zeros(len(dataset), 3, image_size, image_size, device='cpu', dtype=torch.float16)
-    uncertainty_list = torch.zeros(len(dataset), 3, image_size, image_size, device='cpu', dtype=torch.float16)
+    X_0_list = torch.zeros(num_eval_samples, 3, image_size, image_size, device='cpu', dtype=torch.float16)
+    X_0_recon_list = torch.zeros(num_eval_samples, 3, image_size, image_size, device='cpu', dtype=torch.float16)
+    uncertainty_list = torch.zeros(num_eval_samples, 3, image_size, image_size, device='cpu', dtype=torch.float16)
     print('Made X_0_list, X_0_recon_list, uncertainty_list')
     intervals = 50
     i_batch = 0

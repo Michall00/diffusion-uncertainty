@@ -116,7 +116,8 @@ def main() -> None:
         mean_g2, p95_g2 = umap_stats(umap_np)
         display_label = {
             "none": "Baseline",
-            "aleatoric": "Aleatoric MC",
+            "original": "Authors Aleatoric",
+            "aleatoric": "Reimpl Aleatoric MC",
             "gradient": "Epistemic Gradient",
             "resampling": "Epistemic Resampling",
         }.get(method, method)

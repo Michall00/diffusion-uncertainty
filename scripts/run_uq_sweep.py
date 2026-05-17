@@ -87,6 +87,15 @@ def parse_args() -> argparse.Namespace:
                    default="online")
     p.add_argument("--wandb-log-images", choices=["none", "grid", "all"],
                    default="grid")
+
+    p.add_argument("--compute-fid", action="store_true",
+                   help="Compute aggregate FID per trial after the sweep")
+    p.add_argument("--fid-reference-dir", type=Path, default=None,
+                   help="Optional real/reference image directory for FID")
+    p.add_argument("--fid-batch-size", type=int, default=32)
+    p.add_argument("--fid-min-images", type=int, default=8)
+    p.add_argument("--fid-device", type=str, default=None,
+                   help="FID device override; defaults to --device")
     return p.parse_args()
 
 
@@ -342,6 +351,51 @@ def wandb_log_result(
         wandb.log(images, step=step)
 
 
+def compute_fid(args: argparse.Namespace, out_root: Path) -> Path:
+    fid_csv = out_root / "fid_results.csv"
+    cmd = [
+        sys.executable,
+        "scripts/compute_sweep_fid.py",
+        "--sweep-dir",
+        str(out_root),
+        "--out-csv",
+        str(fid_csv),
+        "--batch-size",
+        str(args.fid_batch_size),
+        "--device",
+        str(args.fid_device or args.device or "cuda"),
+        "--min-images",
+        str(args.fid_min_images),
+    ]
+    if args.fid_reference_dir is not None:
+        cmd.extend(["--reference-dir", str(args.fid_reference_dir)])
+    code = run_command(cmd, None, args.dry_run)
+    if code != 0:
+        print(f"[sweep] WARN FID failed, returncode={code}")
+    return fid_csv
+
+
+def wandb_log_fid(wandb_run: Any, fid_csv: Path) -> None:
+    if wandb_run is None or not fid_csv.exists():
+        return
+    import wandb
+
+    with fid_csv.open() as f:
+        rows = list(csv.DictReader(f))
+    for idx, row in enumerate(rows):
+        fid = parse_float(row.get("fid", "N/A"))
+        payload: dict[str, Any] = {
+            "fid/trial_index": int(row["trial_index"]),
+            "fid/method": row["method"],
+            "fid/reference": row["reference"],
+            "fid/n_images": int(row["n_images"]),
+            "fid/status": row["status"],
+        }
+        if fid is not None:
+            payload["fid/value"] = fid
+        wandb.log(payload, step=10_000_000 + idx)
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -444,6 +498,11 @@ def main() -> None:
             )
             step += 1
 
+    fid_csv = None
+    if args.compute_fid:
+        fid_csv = compute_fid(args, out_root)
+        wandb_log_fid(wandb_run, fid_csv)
+
     if wandb_run is not None:
         wandb_run.summary["jobs_ok"] = ok
         wandb_run.summary["jobs_skipped"] = skipped
@@ -452,6 +511,8 @@ def main() -> None:
             import wandb
             artifact = wandb.Artifact("uq_sweep_results", type="results")
             artifact.add_file(str(aggregate_csv))
+            if fid_csv is not None and fid_csv.exists():
+                artifact.add_file(str(fid_csv))
             if failures_csv.exists():
                 artifact.add_file(str(failures_csv))
             wandb_run.log_artifact(artifact)
