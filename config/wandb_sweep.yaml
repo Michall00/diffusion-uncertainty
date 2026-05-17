@@ -1,0 +1,59 @@
+program: scripts/sweep_uq_sd.py
+method: bayes
+metric:
+  goal: maximize
+  name: gradient/clip_score
+
+# Optional: stop a run early if it's clearly bad
+early_terminate:
+  type: hyperband
+  min_iter: 1
+
+parameters:
+  # --- Guidance strength ---
+  lr:
+    distribution: log_uniform_values
+    min: 0.05
+    max: 0.8
+
+  # --- Uncertainty mask width ---
+  percentile:
+    distribution: uniform
+    min: 0.75
+    max: 0.97
+
+  # --- When guidance starts (DDIM step index) ---
+  guidance_start_step:
+    values: [0, 2, 4, 6]
+
+  # --- How many steps are guided ---
+  guidance_n_steps:
+    values: [4, 6, 8, 12]
+
+  # --- Laplace fit quality (regression pairs) ---
+  n_pairs:
+    values: [5, 10, 20, 50]
+
+  # --- Laplace mode ---
+  laplace_mode:
+    values: ["last_layer", "subnet"]
+
+  # --- Fixed across all runs (not swept) ---
+  prompt:
+    value: "a golden retriever in a sunny park"
+  seed:
+    value: 42
+  model_id:
+    value: "CompVis/stable-diffusion-v1-4"
+  num_steps:
+    value: 20
+  guidance_scale:
+    value: 7.5
+  n_ref:
+    value: 1
+  num_mc:
+    value: 3
+  n_mc_subnet:
+    value: 4
+  subnet_max_params:
+    value: 20000
