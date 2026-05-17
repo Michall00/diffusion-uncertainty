@@ -25,6 +25,19 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS = REPO_ROOT / "results"
+MODELS = REPO_ROOT / "models"
+DATA = REPO_ROOT / "data"
+
+MODEL_REQUIREMENTS = {
+    "imagenet64": (
+        MODELS / "64x64_diffusion.pt",
+        "python scripts/download_guided_diffusion_models.py --dataset imagenet64",
+    ),
+    "imagenet128": (
+        MODELS / "128x128_diffusion.pt",
+        "python scripts/download_guided_diffusion_models.py --dataset imagenet128",
+    ),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +72,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--invert-uncertainty", action="store_true")
     p.add_argument("--ensure-starting-data", action="store_true",
                    help="Generate missing diffusion starting points before FID guidance")
+    p.add_argument("--skip-preflight", action="store_true",
+                   help="Skip local file checks before running commands")
+    p.add_argument("--preflight-only", action="store_true",
+                   help="Only check required local files and exit")
 
     p.add_argument("--out-dir", type=Path, default=Path("outputs/paper_metrics"))
     p.add_argument("--wandb", action="store_true")
@@ -67,6 +84,64 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="online")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
+
+
+def preflight(args: argparse.Namespace) -> None:
+    missing: list[str] = []
+    hints: list[str] = []
+
+    model_req = MODEL_REQUIREMENTS.get(args.dataset)
+    if model_req is not None:
+        model_path, hint = model_req
+        if not model_path.exists():
+            missing.append(str(model_path))
+            hints.append(hint)
+
+    if not args.skip_fid:
+        fid_dir = RESULTS / "score_dataset_pytorch_fid" / args.dataset
+        for name in ["m.pt", "s.pt"]:
+            path = fid_dir / name
+            if not path.exists():
+                missing.append(str(path))
+        if not fid_dir.exists() or not (fid_dir / "m.pt").exists() or not (fid_dir / "s.pt").exists():
+            dataset_dir = DATA / args.dataset
+            hints.append(
+                "Prepare FID stats, e.g. after making the dataset available under "
+                f"{dataset_dir}:\n"
+                f"python scripts/compute_dataset_fid.py {dataset_dir} "
+                f"--dataset-name {args.dataset} --device {args.device} --batch-size {args.batch_size}"
+            )
+
+    if not args.skip_ause:
+        dataset_dir = DATA / args.dataset
+        if args.dataset != "cifar10" and not dataset_dir.exists():
+            missing.append(str(dataset_dir))
+            hints.append(
+                f"Make the {args.dataset} dataset available under {dataset_dir} "
+                "or create the expected symlink in data/."
+            )
+
+    data_dir = RESULTS / "diffusion_starting_points" / args.dataset
+    if not args.ensure_starting_data:
+        for name in ["X_T.pth", "y.pth"]:
+            path = data_dir / name
+            if not path.exists():
+                missing.append(str(path))
+        if not (data_dir / "X_T.pth").exists() or not (data_dir / "y.pth").exists():
+            hints.append(
+                "Generate starting data or add --ensure-starting-data:\n"
+                f"python scripts/generate_diffusion_starting_data.py --datasets {args.dataset} "
+                f"--num-samples {args.start_index + args.num_samples} --extra-samples 0"
+            )
+
+    if missing:
+        lines = ["Preflight failed. Missing required files/directories:"]
+        lines.extend(f"  - {item}" for item in dict.fromkeys(missing))
+        if hints:
+            lines.append("")
+            lines.append("Suggested fixes:")
+            lines.extend(f"  - {hint}" for hint in dict.fromkeys(hints))
+        raise FileNotFoundError("\n".join(lines))
 
 
 def run_command(cmd: list[str], log_file, dry_run: bool) -> int:
@@ -306,6 +381,11 @@ def log_wandb(args: argparse.Namespace, rows: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     args = parse_args()
+    if not args.skip_preflight:
+        preflight(args)
+    if args.preflight_only:
+        print("[paper-metrics] preflight ok")
+        return
     run_name = datetime.now().strftime("paper_metrics_%Y%m%d_%H%M%S")
     out_dir = args.out_dir / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
