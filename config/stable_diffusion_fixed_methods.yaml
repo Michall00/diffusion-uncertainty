@@ -1,0 +1,40 @@
+# Fixed-method Stable Diffusion comparison without hyperparameter search.
+# Use this as a base config for scripts/prepare_recap_coco_sweep.py.
+
+project_name: diffusion-uncertainty-recap-coco-fixed-methods
+model_id: CompVis/stable-diffusion-v1-4
+
+defaults:
+  device: cuda
+  num_steps: 20
+  guidance_scale: 7.5
+  guidance_start_step: 0
+  guidance_n_steps: 8
+  percentile: 0.95
+  lr: 1.0
+  height: 512
+  width: 512
+  num_mc: 5
+
+  # Needed only for epistemic methods. These are fixed, not swept.
+  laplace_mode: last_layer
+  n_ref: 3
+  n_pairs: 50
+  n_mc_subnet: 4
+  subnet_max_params: 20000
+
+seeds: [42]
+prompts:
+  - "a photo of a cat"
+
+sweep:
+  - name: fixed_methods
+    enabled: true
+    methods: [baseline, aleatoric, gradient, resampling, original]
+    laplace_mode: last_layer
+    guidance_n_steps: 8
+    percentile: 0.95
+    lr: 1.0
+    num_mc: 5
+    n_ref: 3
+    n_pairs: 50

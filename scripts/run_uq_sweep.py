@@ -20,6 +20,7 @@ import math
 import re
 import subprocess
 import sys
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -232,6 +233,16 @@ def run_command(cmd: list[str], log_path: Path | None, dry_run: bool) -> int:
             stdout=log_f,
             stderr=subprocess.STDOUT,
         ).returncode
+
+
+def print_log_tail(log_path: Path | None, n_lines: int = 80) -> None:
+    if log_path is None or not log_path.exists():
+        return
+    print(f"[sweep] Last {n_lines} log lines from {log_path}:")
+    with log_path.open(errors="replace") as f:
+        for line in deque(f, maxlen=n_lines):
+            print(line, end="")
+    print()
 
 
 def read_evaluation_rows(result_dir: Path) -> list[dict[str, str]]:
@@ -468,6 +479,7 @@ def main() -> None:
                         "result_dir": str(result_dir),
                     }])
                     print(f"[sweep] FAILED compare, returncode={code}")
+                    print_log_tail(log_path)
                     continue
                 ok += 1
 
@@ -475,6 +487,7 @@ def main() -> None:
             eval_code = run_command(eval_cmd, log_path, args.dry_run)
             if eval_code != 0:
                 print(f"[sweep] WARN evaluate failed, returncode={eval_code}")
+                print_log_tail(log_path)
                 continue
 
             rows_raw = [] if args.dry_run else read_evaluation_rows(result_dir)
