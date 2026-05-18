@@ -1,0 +1,62 @@
+# Fixed-method Stable Diffusion comparison without the authors' original
+# pipeline. Use this when evaluating baseline, aleatoric, and epistemic methods
+# while the original implementation is unstable.
+
+project_name: diffusion-uncertainty-recap-coco-fixed-methods-no-original
+model_id: CompVis/stable-diffusion-v1-4
+
+defaults:
+  device: cuda
+  num_steps: 20
+  guidance_scale: 7.5
+  guidance_start_step: 0
+  guidance_n_steps: 8
+  percentile: 0.95
+  lr: 1.0
+  height: 512
+  width: 512
+  num_mc: 5
+
+  # Needed only for epistemic methods. These are fixed, not swept.
+  laplace_mode: last_layer
+  n_ref: 3
+  n_pairs: 50
+  n_mc_subnet: 4
+  subnet_max_params: 20000
+
+seeds: [42]
+prompts:
+  - "a photo of a cat"
+
+sweep:
+  - name: fixed_baseline
+    enabled: true
+    methods: [baseline]
+
+  - name: fixed_aleatoric
+    enabled: true
+    methods: [aleatoric]
+    guidance_n_steps: 8
+    percentile: 0.95
+    lr: 1.0
+    num_mc: 5
+
+  - name: fixed_gradient
+    enabled: true
+    methods: [gradient]
+    laplace_mode: last_layer
+    guidance_n_steps: 8
+    percentile: 0.95
+    lr: 1.0
+    n_ref: 3
+    n_pairs: 50
+
+  - name: fixed_resampling
+    enabled: true
+    methods: [resampling]
+    laplace_mode: last_layer
+    guidance_n_steps: 8
+    percentile: 0.95
+    lr: 1.0
+    n_ref: 3
+    n_pairs: 50

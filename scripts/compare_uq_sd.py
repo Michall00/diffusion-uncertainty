@@ -128,6 +128,8 @@ def run_original_authors_method(args: argparse.Namespace, device: str, dtype: to
     ).to(device)
     if hasattr(pipe, "enable_attention_slicing"):
         pipe.enable_attention_slicing()
+    if hasattr(pipe, "enable_vae_slicing"):
+        pipe.enable_vae_slicing()
 
     try:
         result = pipe(
@@ -145,7 +147,7 @@ def run_original_authors_method(args: argparse.Namespace, device: str, dtype: to
             percentile=args.percentile,
             lr=args.lr,
         )
-        image = result["images"]
+        image = result.images if hasattr(result, "images") else result["images"]
         return image.float().cpu()
     finally:
         del pipe

@@ -105,9 +105,8 @@ def get_uncertainty_guided_score_with_percentile(pred_epsilon: Tensor, input: Te
         # pixel_wise_uncertainty = (pred_epsilons_hat - pred_epsilon.unsqueeze(0)).pow(2).mean(dim=0)        
         pixel_wise_uncertainty = torch.var(pred_epsilons_hat, dim=0)
         uncertainty = pixel_wise_uncertainty.mean(dim=0).sum()
-        if not use_posterior: uncertainty.backward()
+    if not use_posterior: uncertainty.backward()
     uncertainty_shape = pixel_wise_uncertainty.shape
-    print(f'{pixel_wise_uncertainty=}')
     
     thresholded_map = pixel_wise_uncertainty > torch.quantile(pixel_wise_uncertainty.to(torch.float32).flatten(1), percentile, dim=1, keepdim=True).view(uncertainty_shape[0], *([1] * (len(uncertainty_shape) - 1)))
     thresholded_map = thresholded_map.float()

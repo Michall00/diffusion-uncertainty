@@ -242,12 +242,38 @@ def build_evaluate_cmd(result_dir: Path, no_clip: bool) -> list[str]:
     return cmd
 
 
-def run_command(cmd: list[str], log_path: Path | None, dry_run: bool) -> int:
+def run_command(cmd: list[str], log_path: Path | None, dry_run: bool, stream: bool = False) -> int:
     if dry_run:
         print("[dry-run]", " ".join(cmd))
         return 0
-    if log_path is None:
+    if log_path is None and not stream:
         return subprocess.run(cmd, cwd=REPO_ROOT).returncode
+    if stream:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        log_f = None
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_f = log_path.open("a")
+            log_f.write(f"\n$ {' '.join(cmd)}\n")
+            log_f.flush()
+        assert proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                print(line, end="")
+                if log_f is not None:
+                    log_f.write(line)
+        finally:
+            if log_f is not None:
+                log_f.flush()
+                log_f.close()
+        return proc.wait()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a") as log_f:
         log_f.write(f"\n$ {' '.join(cmd)}\n")
@@ -552,7 +578,7 @@ def main() -> None:
 
         for prompt, seed in prompt_seed_pairs:
             result_dir = prompt_run_dir(trial_dir, prompt, seed)
-            log_path = None if args.stream_logs else result_dir / "run.log"
+            log_path = result_dir / "run.log"
 
             print(f"\n[sweep] trial={trial_index + 1}/{len(trials)} group={trial['group']} seed={seed}")
             print(f"[sweep] prompt={prompt!r}")
@@ -565,7 +591,7 @@ def main() -> None:
                 cmd = build_compare_cmd(prompt, seed, trial, trial_dir)
                 result_dir.mkdir(parents=True, exist_ok=True)
                 (result_dir / "command.txt").write_text(" ".join(cmd) + "\n")
-                code = run_command(cmd, log_path, args.dry_run)
+                code = run_command(cmd, log_path, args.dry_run, stream=args.stream_logs)
                 if code != 0:
                     failed += 1
                     append_csv(failures_csv, [{
@@ -582,7 +608,7 @@ def main() -> None:
                 ok += 1
 
             eval_cmd = build_evaluate_cmd(result_dir, args.no_clip)
-            eval_code = run_command(eval_cmd, log_path, args.dry_run)
+            eval_code = run_command(eval_cmd, log_path, args.dry_run, stream=args.stream_logs)
             if eval_code != 0:
                 print(f"[sweep] WARN evaluate failed, returncode={eval_code}")
                 print_log_tail(log_path)
