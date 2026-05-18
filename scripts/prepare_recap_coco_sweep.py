@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-config", type=Path, default=DEFAULT_BASE_CONFIG)
     parser.add_argument("--out-config", type=Path, default=DEFAULT_OUT_CONFIG)
     parser.add_argument("--sweep-seeds", type=int, nargs="+", default=[42])
+    parser.add_argument("--seed-mode", choices=["cartesian", "per-prompt"], default="cartesian")
     parser.add_argument("--reference-dir", type=Path, default=DEFAULT_REFERENCE_DIR)
     parser.add_argument("--no-reference-images", action="store_true")
     parser.add_argument("--allow-duplicate-images", action="store_true")
@@ -113,12 +114,19 @@ def main() -> None:
     config["project_name"] = "diffusion-uncertainty-recap-coco"
     config["seeds"] = args.sweep_seeds
     config["prompts"] = prompts
+    if args.seed_mode == "per-prompt":
+        base_seed = args.sweep_seeds[0]
+        config["prompt_seed_pairs"] = [
+            {"prompt": prompt, "seed": base_seed + idx}
+            for idx, prompt in enumerate(prompts)
+        ]
     config["recap_coco"] = {
         "dataset_id": args.dataset_id,
         "split": args.split,
         "prompt_column": args.prompt_column,
         "num_prompts": args.num_prompts,
         "shuffle_seed": args.seed,
+        "seed_mode": args.seed_mode,
         "reference_dir": None if args.no_reference_images else str(args.reference_dir),
     }
 

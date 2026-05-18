@@ -273,9 +273,13 @@ def main() -> None:
         else:
             u_proj_np = None
 
+        # For epistemic methods, the FLARE-style projection is a more useful
+        # final-image uncertainty visualization than a single-step gamma2 map.
+        grid_umap = u_proj_np if method in {"gradient", "resampling"} and u_proj_np is not None else umap_np
+
         # Collect for grid
         images_for_grid.append(img_np.astype(np.float32) / 255.0)
-        umaps_for_grid.append(umap_np)
+        umaps_for_grid.append(grid_umap)
         labels_for_grid.append(label)
 
         # Collect for NPZ

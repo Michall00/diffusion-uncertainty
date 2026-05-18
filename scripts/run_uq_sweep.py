@@ -172,6 +172,25 @@ def expand_trials(cfg: dict[str, Any], args: argparse.Namespace) -> list[dict[st
     return trials
 
 
+def load_prompt_seed_pairs(cfg: dict[str, Any], args: argparse.Namespace) -> list[tuple[str, int]]:
+    if cfg.get("prompt_seed_pairs"):
+        pairs = [
+            (str(item["prompt"]), int(item["seed"]))
+            for item in cfg["prompt_seed_pairs"]
+        ]
+        if args.max_prompts is not None:
+            pairs = pairs[:args.max_prompts]
+        return pairs
+
+    prompts = list(cfg.get("prompts", []))
+    seeds = list(cfg.get("seeds", [42]))
+    if args.max_prompts is not None:
+        prompts = prompts[:args.max_prompts]
+    if args.max_seeds is not None:
+        seeds = seeds[:args.max_seeds]
+    return list(itertools.product(prompts, seeds))
+
+
 def trial_slug(trial: dict[str, Any], index: int) -> str:
     parts = [
         f"{index:04d}",
@@ -411,13 +430,8 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
 
-    prompts = list(cfg.get("prompts", []))
-    seeds = list(cfg.get("seeds", [42]))
-    if args.max_prompts is not None:
-        prompts = prompts[:args.max_prompts]
-    if args.max_seeds is not None:
-        seeds = seeds[:args.max_seeds]
-    if not prompts:
+    prompt_seed_pairs = load_prompt_seed_pairs(cfg, args)
+    if not prompt_seed_pairs:
         raise ValueError("No prompts configured")
 
     trials = expand_trials(cfg, args)
@@ -430,10 +444,10 @@ def main() -> None:
     with (out_root / "expanded_trials.json").open("w") as f:
         json.dump(trials, f, indent=2)
 
-    total_jobs = len(trials) * len(prompts) * len(seeds)
+    total_jobs = len(trials) * len(prompt_seed_pairs)
     print(f"[sweep] config={args.config}")
     print(f"[sweep] output={out_root}")
-    print(f"[sweep] {len(trials)} trials × {len(prompts)} prompts × {len(seeds)} seeds = {total_jobs} jobs")
+    print(f"[sweep] {len(trials)} trials × {len(prompt_seed_pairs)} prompt/seed pairs = {total_jobs} jobs")
     print(f"[sweep] dry_run={args.dry_run} skip_existing={args.skip_existing}")
 
     wandb_run = init_wandb(args, cfg, run_name)
@@ -452,7 +466,7 @@ def main() -> None:
         with (trial_dir / "trial_config.json").open("w") as f:
             json.dump(trial, f, indent=2)
 
-        for prompt, seed in itertools.product(prompts, seeds):
+        for prompt, seed in prompt_seed_pairs:
             result_dir = prompt_run_dir(trial_dir, prompt, seed)
             log_path = None if args.stream_logs else result_dir / "run.log"
 
