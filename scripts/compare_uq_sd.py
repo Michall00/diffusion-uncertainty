@@ -103,6 +103,12 @@ def tensor_to_numpy_image(t: torch.Tensor) -> np.ndarray:
     return (arr.clip(0, 1) * 255).astype(np.uint8)
 
 
+def tensor_to_numpy(t: torch.Tensor | np.ndarray) -> np.ndarray:
+    if isinstance(t, torch.Tensor):
+        return t.detach().float().cpu().numpy()
+    return np.asarray(t, dtype=np.float32)
+
+
 def save_png(image_np: np.ndarray, path: Path) -> None:
     from PIL import Image
     Image.fromarray(image_np).save(path)
@@ -197,6 +203,9 @@ def main() -> None:
         print(f"{'='*60}")
 
         umap = None
+        umap_np = None
+        u_proj = None
+        result = None
         if method == "original":
             if pipe is not None:
                 remaining = set(args.methods[method_index + 1:])
@@ -210,6 +219,7 @@ def main() -> None:
             image = run_original_authors_method(args, device, dtype)
             img_np = tensor_to_numpy_image(image)
             label = "Authors Aleatoric"
+            del image
         else:
             assert pipe is not None
             guidance_mode = method if method in {"aleatoric", "gradient", "resampling"} else "none"
@@ -247,6 +257,7 @@ def main() -> None:
                 "resampling": "Epistemic Resampling",
             }[guidance_mode]
             umap = result.uncertainty_map
+            u_proj = result.u_proj
 
         # Save individual image
         save_png(img_np, out_dir / f"{method}.png")
@@ -254,23 +265,31 @@ def main() -> None:
         # Save uncertainty map
         if umap is not None:
             save_heatmap_png(umap, out_dir / f"{method}_umap.png")
+            umap_np = tensor_to_numpy(umap)
 
-        if method != "original" and result.u_proj is not None:
-            save_heatmap_png(result.u_proj, out_dir / f"{method}_uproj.png")
+        if u_proj is not None:
+            save_heatmap_png(u_proj, out_dir / f"{method}_uproj.png")
+            u_proj_np = tensor_to_numpy(u_proj)
+        else:
+            u_proj_np = None
 
         # Collect for grid
         images_for_grid.append(img_np.astype(np.float32) / 255.0)
-        umaps_for_grid.append(umap)
+        umaps_for_grid.append(umap_np)
         labels_for_grid.append(label)
 
         # Collect for NPZ
         npz_data[f"{method}_image"] = img_np
-        if umap is not None:
-            npz_data[f"{method}_umap"] = umap.cpu().numpy()
-        if method != "original" and result.u_proj is not None:
-            npz_data[f"{method}_uproj"] = result.u_proj.cpu().numpy()
+        if umap_np is not None:
+            npz_data[f"{method}_umap"] = umap_np
+        if u_proj_np is not None:
+            npz_data[f"{method}_uproj"] = u_proj_np
 
         print(f"[compare_uq_sd] Saved {method}.png")
+        del result, umap, u_proj
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        gc.collect()
 
     # Save comparison grid
     save_comparison_grid(
