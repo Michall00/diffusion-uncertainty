@@ -7,6 +7,7 @@ Inputs:
 
 Output:
   - method_summary.csv: one row per method
+  - per_prompt_metrics.csv: merged per prompt/seed rows with aggregate CLIPScore
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize Stable Diffusion UQ sweep by method")
     parser.add_argument("--sweep-dir", type=Path, required=True)
     parser.add_argument("--out-csv", type=Path, default=None)
+    parser.add_argument("--out-per-prompt-csv", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -49,6 +51,22 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return []
     with path.open() as f:
         return list(csv.DictReader(f))
+
+
+def write_rows(path: Path, rows: list[dict[str, Any]], fieldnames: list[str] | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if fieldnames is None:
+        fieldnames = []
+        seen: set[str] = set()
+        for row in rows:
+            for key in row:
+                if key not in seen:
+                    seen.add(key)
+                    fieldnames.append(key)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def parse_float(value: Any) -> float | None:
@@ -205,6 +223,8 @@ def main() -> None:
     fid_rows = read_csv(args.sweep_dir / "fid_results.csv")
     clip_rows = read_csv(args.sweep_dir / "clip_results.csv")
     eval_rows = merge_clip_rows(eval_rows, clip_rows)
+    per_prompt_csv = args.out_per_prompt_csv or (args.sweep_dir / "per_prompt_metrics.csv")
+    write_rows(per_prompt_csv, eval_rows)
 
     eval_summary = summarize_eval(eval_rows)
     fid_summary = summarize_fid(fid_rows)
@@ -237,7 +257,6 @@ def main() -> None:
         rows.append(row)
 
     out_csv = args.out_csv or (args.sweep_dir / "method_summary.csv")
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "method",
         "category",
@@ -253,12 +272,10 @@ def main() -> None:
         "mean_gamma2_mean",
         "p95_gamma2_mean",
     ]
-    with out_csv.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    write_rows(out_csv, rows, fieldnames=fieldnames)
 
     print(f"[summary] wrote {out_csv}")
+    print(f"[summary] wrote {per_prompt_csv}")
 
 
 if __name__ == "__main__":

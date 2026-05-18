@@ -459,6 +459,7 @@ def compute_clip(args: argparse.Namespace, out_root: Path) -> Path:
 
 def summarize_methods(args: argparse.Namespace, out_root: Path) -> Path:
     summary_csv = out_root / "method_summary.csv"
+    per_prompt_csv = out_root / "per_prompt_metrics.csv"
     cmd = [
         sys.executable,
         "scripts/summarize_uq_sweep.py",
@@ -466,6 +467,8 @@ def summarize_methods(args: argparse.Namespace, out_root: Path) -> Path:
         str(out_root),
         "--out-csv",
         str(summary_csv),
+        "--out-per-prompt-csv",
+        str(per_prompt_csv),
     ]
     code = run_command(cmd, None, args.dry_run)
     if code != 0:
@@ -646,7 +649,12 @@ def main() -> None:
     overview_path = make_method_grid(args, out_root)
     if wandb_run is not None:
         wandb_log_csv_table(wandb_run, summary_csv, "tables/method_summary")
-        wandb_log_csv_table(wandb_run, aggregate_csv, "tables/per_prompt_metrics")
+        per_prompt_csv = out_root / "per_prompt_metrics.csv"
+        wandb_log_csv_table(
+            wandb_run,
+            per_prompt_csv if per_prompt_csv.exists() else aggregate_csv,
+            "tables/per_prompt_metrics",
+        )
         if fid_csv is not None:
             wandb_log_csv_table(wandb_run, fid_csv, "tables/fid_results")
         if clip_csv is not None:
@@ -667,6 +675,9 @@ def main() -> None:
                 artifact.add_file(str(clip_csv))
             if summary_csv.exists():
                 artifact.add_file(str(summary_csv))
+            per_prompt_csv = out_root / "per_prompt_metrics.csv"
+            if per_prompt_csv.exists():
+                artifact.add_file(str(per_prompt_csv))
             if overview_path.exists():
                 artifact.add_file(str(overview_path))
             if failures_csv.exists():
@@ -678,6 +689,9 @@ def main() -> None:
     print(f"[sweep] Aggregated CSV: {aggregate_csv}")
     if summary_csv.exists():
         print(f"[sweep] Method summary CSV: {summary_csv}")
+    per_prompt_csv = out_root / "per_prompt_metrics.csv"
+    if per_prompt_csv.exists():
+        print(f"[sweep] Per-prompt metrics CSV: {per_prompt_csv}")
     if overview_path.exists():
         print(f"[sweep] Method overview image: {overview_path}")
     if failures_csv.exists():
