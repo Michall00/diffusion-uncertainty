@@ -43,7 +43,9 @@ def compute_clip_score(image_np: np.ndarray, prompt: str) -> float | None:
         from transformers import CLIPModel, CLIPProcessor
 
         device = "cpu"
-        model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+        model = CLIPModel.from_pretrained(
+            "openai/clip-vit-base-patch32", use_safetensors=True
+        ).to(device)
         processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
         pil_image = Image.fromarray(image_np)

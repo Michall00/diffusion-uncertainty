@@ -134,6 +134,14 @@ def merge_clip_rows(eval_rows: list[dict[str, str]], clip_rows: list[dict[str, s
     return merged
 
 
+def add_prompt_stats(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    for row in rows:
+        prompt = row.get("prompt", "")
+        row["prompt_n_chars"] = str(len(prompt))
+        row["prompt_n_words"] = str(len(prompt.split()))
+    return rows
+
+
 def mean_or_na(values: list[float]) -> str:
     return f"{mean(values):.6f}" if values else "N/A"
 
@@ -159,6 +167,8 @@ def summarize_eval(rows: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
         delta_values: list[float] = []
         mean_gamma2_values: list[float] = []
         p95_gamma2_values: list[float] = []
+        prompt_word_values: list[float] = []
+        prompt_char_values: list[float] = []
 
         for row in method_rows:
             clip = parse_float(row.get("CLIPScore"))
@@ -174,6 +184,12 @@ def summarize_eval(rows: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
                 mean_gamma2_values.append(mean_g)
             if p95_g is not None:
                 p95_gamma2_values.append(p95_g)
+            prompt_words = parse_float(row.get("prompt_n_words"))
+            prompt_chars = parse_float(row.get("prompt_n_chars"))
+            if prompt_words is not None:
+                prompt_word_values.append(prompt_words)
+            if prompt_chars is not None:
+                prompt_char_values.append(prompt_chars)
 
         summary[method] = {
             "method": method,
@@ -185,6 +201,8 @@ def summarize_eval(rows: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
             "delta_clip_vs_baseline_std": std_or_na(delta_values),
             "mean_gamma2_mean": mean_or_na(mean_gamma2_values),
             "p95_gamma2_mean": mean_or_na(p95_gamma2_values),
+            "prompt_words_mean": mean_or_na(prompt_word_values),
+            "prompt_chars_mean": mean_or_na(prompt_char_values),
         }
     return summary
 
@@ -223,6 +241,7 @@ def main() -> None:
     fid_rows = read_csv(args.sweep_dir / "fid_results.csv")
     clip_rows = read_csv(args.sweep_dir / "clip_results.csv")
     eval_rows = merge_clip_rows(eval_rows, clip_rows)
+    eval_rows = add_prompt_stats(eval_rows)
     per_prompt_csv = args.out_per_prompt_csv or (args.sweep_dir / "per_prompt_metrics.csv")
     write_rows(per_prompt_csv, eval_rows)
 
@@ -251,6 +270,8 @@ def main() -> None:
             "fid_status": "N/A",
             "mean_gamma2_mean": "N/A",
             "p95_gamma2_mean": "N/A",
+            "prompt_words_mean": "N/A",
+            "prompt_chars_mean": "N/A",
         }
         row.update(eval_summary.get(method, {}))
         row.update(fid_summary.get(method, {}))
@@ -271,6 +292,8 @@ def main() -> None:
         "fid_status",
         "mean_gamma2_mean",
         "p95_gamma2_mean",
+        "prompt_words_mean",
+        "prompt_chars_mean",
     ]
     write_rows(out_csv, rows, fieldnames=fieldnames)
 

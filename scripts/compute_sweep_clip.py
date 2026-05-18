@@ -61,7 +61,7 @@ def compute_scores(items: list[dict[str, object]], args: argparse.Namespace) -> 
     from PIL import Image
     from transformers import CLIPModel, CLIPProcessor
 
-    model = CLIPModel.from_pretrained(args.model_id).to(args.device)
+    model = CLIPModel.from_pretrained(args.model_id, use_safetensors=True).to(args.device)
     processor = CLIPProcessor.from_pretrained(args.model_id)
     model.eval()
 
