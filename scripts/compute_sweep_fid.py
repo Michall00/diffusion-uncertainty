@@ -15,6 +15,9 @@ import shutil
 from pathlib import Path
 
 
+IMAGE_EXTENSIONS = {".bmp", ".jpg", ".jpeg", ".pgm", ".png", ".ppm", ".tif", ".tiff", ".webp"}
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Compute FID over sweep image sets")
     p.add_argument("--sweep-dir", type=Path, required=True,
@@ -30,6 +33,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--min-images", type=int, default=8,
                    help="Skip FID for sets with fewer images")
+    p.add_argument("--image-size", type=int, default=512,
+                   help="Square size used when normalizing images for FID")
+    p.add_argument("--resize-mode", choices=["fit", "stretch", "none"], default="fit",
+                   help="How to normalize image shapes before FID")
     return p.parse_args()
 
 
@@ -54,6 +61,13 @@ def method_images(trial_dir: Path) -> dict[str, list[Path]]:
     return images
 
 
+def image_files(root: Path) -> list[Path]:
+    return sorted(
+        path for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    )
+
+
 def link_or_copy(src: Path, dst: Path) -> None:
     if dst.exists():
         return
@@ -63,11 +77,37 @@ def link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def materialize_image_set(root: Path, method: str, paths: list[Path]) -> Path:
+def resize_image(src: Path, dst: Path, args: argparse.Namespace) -> None:
+    from PIL import Image, ImageOps
+
+    with Image.open(src) as image:
+        image = ImageOps.exif_transpose(image.convert("RGB"))
+        if args.resize_mode == "fit":
+            image = ImageOps.fit(
+                image,
+                (args.image_size, args.image_size),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+        elif args.resize_mode == "stretch":
+            image = image.resize((args.image_size, args.image_size), Image.Resampling.LANCZOS)
+        image.save(dst, quality=95)
+
+
+def materialize_image_set(root: Path, method: str, paths: list[Path], args: argparse.Namespace) -> Path:
     out = root / method
     out.mkdir(parents=True, exist_ok=True)
+    if args.resize_mode != "none":
+        for existing in image_files(out):
+            existing.unlink()
     for idx, src in enumerate(paths):
-        link_or_copy(src, out / f"{idx:06d}_{src.name}")
+        dst = out / f"{idx:06d}_{src.stem}.jpg"
+        if dst.exists():
+            continue
+        if args.resize_mode == "none":
+            link_or_copy(src, out / f"{idx:06d}_{src.name}")
+        else:
+            resize_image(src, dst, args)
     return out
 
 
@@ -106,14 +146,15 @@ def main() -> None:
 
         trial_fid_root = fid_root / trial_dir.name
         method_dirs = {
-            method: materialize_image_set(trial_fid_root, method, paths)
+            method: materialize_image_set(trial_fid_root, method, paths, args)
             for method, paths in images_by_method.items()
         }
 
         if args.reference_dir is not None:
-            reference_dir = args.reference_dir
+            reference_paths = image_files(args.reference_dir)
+            reference_dir = materialize_image_set(trial_fid_root, "_reference", reference_paths, args)
             reference_name = str(args.reference_dir)
-            reference_count = len(list(reference_dir.glob("*")))
+            reference_count = len(reference_paths)
         else:
             reference_dir = method_dirs[args.compare_to]
             reference_name = args.compare_to

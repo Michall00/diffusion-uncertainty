@@ -35,6 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sweep-seeds", type=int, nargs="+", default=[42])
     parser.add_argument("--seed-mode", choices=["cartesian", "per-prompt"], default="cartesian")
     parser.add_argument("--reference-dir", type=Path, default=DEFAULT_REFERENCE_DIR)
+    parser.add_argument("--reference-size", type=int, default=512)
+    parser.add_argument("--reference-resize-mode", choices=["fit", "stretch", "none"], default="fit")
     parser.add_argument("--no-reference-images", action="store_true")
     parser.add_argument("--allow-duplicate-images", action="store_true")
     return parser.parse_args()
@@ -54,21 +56,32 @@ def load_base_config(path: Path) -> dict[str, Any]:
     return config
 
 
-def save_reference_image(image: Any, path: Path) -> None:
+def resize_reference_image(image, size: int, mode: str):
+    from PIL import Image, ImageOps
+
+    image = ImageOps.exif_transpose(image.convert("RGB"))
+    if mode == "none":
+        return image
+    if mode == "stretch":
+        return image.resize((size, size), Image.Resampling.LANCZOS)
+    return ImageOps.fit(image, (size, size), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+
+
+def save_reference_image(image: Any, path: Path, size: int, mode: str) -> None:
     from PIL import Image
 
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(image, Image.Image):
-        image.convert("RGB").save(path, quality=95)
+        resize_reference_image(image, size, mode).save(path, quality=95)
         return
     if isinstance(image, dict):
         if image.get("bytes") is not None:
             import io
 
-            Image.open(io.BytesIO(image["bytes"])).convert("RGB").save(path, quality=95)
+            resize_reference_image(Image.open(io.BytesIO(image["bytes"])), size, mode).save(path, quality=95)
             return
         if image.get("path") is not None:
-            Image.open(image["path"]).convert("RGB").save(path, quality=95)
+            resize_reference_image(Image.open(image["path"]), size, mode).save(path, quality=95)
             return
     raise TypeError(f"Unsupported image value for reference export: {type(image)!r}")
 
@@ -127,6 +140,8 @@ def main() -> None:
         "num_prompts": args.num_prompts,
         "shuffle_seed": args.seed,
         "seed_mode": args.seed_mode,
+        "reference_size": args.reference_size,
+        "reference_resize_mode": args.reference_resize_mode,
         "reference_dir": None if args.no_reference_images else str(args.reference_dir),
     }
 
@@ -142,7 +157,7 @@ def main() -> None:
             for idx, row in enumerate(rows):
                 image_id = str(row.get("image_id", idx))
                 image_path = args.reference_dir / f"{idx:06d}_{image_id}.jpg"
-                save_reference_image(row["image"], image_path)
+                save_reference_image(row["image"], image_path, args.reference_size, args.reference_resize_mode)
                 coco_url = str(row.get("coco_url", ""))
                 prompt = prompts[idx].replace('"', '""')
                 manifest.write(f'{idx},{image_id},"{coco_url}","{prompt}"\n')
