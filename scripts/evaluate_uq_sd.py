@@ -123,6 +123,7 @@ def main() -> None:
         }.get(method, method)
 
         rows.append({
+            "Method ID": method,
             "Method": display_label,
             "CLIPScore": f"{clip_score:.4f}" if clip_score is not None else "N/A",
             "Mean γ²": f"{mean_g2:.6f}",

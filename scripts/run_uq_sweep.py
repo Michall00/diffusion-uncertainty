@@ -74,6 +74,10 @@ def parse_args() -> argparse.Namespace:
                    help="Skip prompt/seed/trial runs with an existing results.npz")
     p.add_argument("--no-clip", action="store_true",
                    help="Skip CLIPScore evaluation")
+    p.add_argument("--compute-clip", action="store_true",
+                   help="Compute CLIPScore once in aggregate after generation")
+    p.add_argument("--clip-batch-size", type=int, default=32)
+    p.add_argument("--clip-device", type=str, default="cpu")
     p.add_argument("--dry-run", action="store_true",
                    help="Print commands without running them")
     p.add_argument("--stream-logs", action="store_true",
@@ -88,6 +92,8 @@ def parse_args() -> argparse.Namespace:
                    default="online")
     p.add_argument("--wandb-log-images", choices=["none", "grid", "all"],
                    default="grid")
+    p.add_argument("--overview-max-rows", type=int, default=12,
+                   help="Number of prompt rows in the final method overview image")
 
     p.add_argument("--compute-fid", action="store_true",
                    help="Compute aggregate FID per trial after the sweep")
@@ -405,6 +411,61 @@ def compute_fid(args: argparse.Namespace, out_root: Path) -> Path:
     return fid_csv
 
 
+def compute_clip(args: argparse.Namespace, out_root: Path) -> Path:
+    clip_csv = out_root / "clip_results.csv"
+    cmd = [
+        sys.executable,
+        "scripts/compute_sweep_clip.py",
+        "--sweep-dir",
+        str(out_root),
+        "--out-csv",
+        str(clip_csv),
+        "--batch-size",
+        str(args.clip_batch_size),
+        "--device",
+        args.clip_device,
+    ]
+    code = run_command(cmd, None, args.dry_run)
+    if code != 0:
+        print(f"[sweep] WARN aggregate CLIP failed, returncode={code}")
+    return clip_csv
+
+
+def summarize_methods(args: argparse.Namespace, out_root: Path) -> Path:
+    summary_csv = out_root / "method_summary.csv"
+    cmd = [
+        sys.executable,
+        "scripts/summarize_uq_sweep.py",
+        "--sweep-dir",
+        str(out_root),
+        "--out-csv",
+        str(summary_csv),
+    ]
+    code = run_command(cmd, None, args.dry_run)
+    if code != 0:
+        print(f"[sweep] WARN method summary failed, returncode={code}")
+    return summary_csv
+
+
+def make_method_grid(args: argparse.Namespace, out_root: Path) -> Path:
+    overview_dir = out_root / "overview"
+    cmd = [
+        sys.executable,
+        "scripts/make_uq_method_grid.py",
+        "--sweep-dir",
+        str(out_root),
+        "--out-dir",
+        str(overview_dir),
+        "--max-rows",
+        str(args.overview_max_rows),
+        "--include-prompts",
+    ]
+    code = run_command(cmd, None, args.dry_run)
+    if code != 0:
+        print(f"[sweep] WARN method overview grid failed, returncode={code}")
+    return overview_dir / "method_overview.png"
+
+
 def wandb_log_fid(wandb_run: Any, fid_csv: Path) -> None:
     if wandb_run is None or not fid_csv.exists():
         return
@@ -424,6 +485,29 @@ def wandb_log_fid(wandb_run: Any, fid_csv: Path) -> None:
         if fid is not None:
             payload["fid/value"] = fid
         wandb.log(payload, step=10_000_000 + idx)
+
+
+def wandb_log_csv_table(wandb_run: Any, csv_path: Path, table_name: str) -> None:
+    if wandb_run is None or not csv_path.exists():
+        return
+    import wandb
+
+    with csv_path.open() as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return
+    table = wandb.Table(columns=list(rows[0]))
+    for row in rows:
+        table.add_data(*[row.get(column, "") for column in table.columns])
+    wandb.log({table_name: table})
+
+
+def wandb_log_overview(wandb_run: Any, overview_path: Path) -> None:
+    if wandb_run is None or not overview_path.exists():
+        return
+    import wandb
+
+    wandb.log({"images/method_overview": wandb.Image(str(overview_path))})
 
 
 def main() -> None:
@@ -526,9 +610,22 @@ def main() -> None:
             step += 1
 
     fid_csv = None
+    clip_csv = None
     if args.compute_fid:
         fid_csv = compute_fid(args, out_root)
         wandb_log_fid(wandb_run, fid_csv)
+    if args.compute_clip:
+        clip_csv = compute_clip(args, out_root)
+    summary_csv = summarize_methods(args, out_root)
+    overview_path = make_method_grid(args, out_root)
+    if wandb_run is not None:
+        wandb_log_csv_table(wandb_run, summary_csv, "tables/method_summary")
+        wandb_log_csv_table(wandb_run, aggregate_csv, "tables/per_prompt_metrics")
+        if fid_csv is not None:
+            wandb_log_csv_table(wandb_run, fid_csv, "tables/fid_results")
+        if clip_csv is not None:
+            wandb_log_csv_table(wandb_run, clip_csv, "tables/clip_results")
+        wandb_log_overview(wandb_run, overview_path)
 
     if wandb_run is not None:
         wandb_run.summary["jobs_ok"] = ok
@@ -540,6 +637,12 @@ def main() -> None:
             artifact.add_file(str(aggregate_csv))
             if fid_csv is not None and fid_csv.exists():
                 artifact.add_file(str(fid_csv))
+            if clip_csv is not None and clip_csv.exists():
+                artifact.add_file(str(clip_csv))
+            if summary_csv.exists():
+                artifact.add_file(str(summary_csv))
+            if overview_path.exists():
+                artifact.add_file(str(overview_path))
             if failures_csv.exists():
                 artifact.add_file(str(failures_csv))
             wandb_run.log_artifact(artifact)
@@ -547,6 +650,10 @@ def main() -> None:
 
     print(f"\n[sweep] Done: {ok} OK, {skipped} skipped, {failed} failed.")
     print(f"[sweep] Aggregated CSV: {aggregate_csv}")
+    if summary_csv.exists():
+        print(f"[sweep] Method summary CSV: {summary_csv}")
+    if overview_path.exists():
+        print(f"[sweep] Method overview image: {overview_path}")
     if failures_csv.exists():
         print(f"[sweep] Failures CSV: {failures_csv}")
 
