@@ -1,0 +1,75 @@
+# Fixed-method Recap-COCO evaluation matched to the sweep_uq_sd.py protocol.
+#
+# This is not a hyperparameter search. It runs one fixed setting per method:
+# - baseline: no guidance
+# - aleatoric: best setting observed in the W&B aleatoric sweep
+# - gradient/resampling: conservative settings inside the original sweep ranges
+#   instead of reusing the aggressive aleatoric lr=1.0.
+
+project_name: diffusion-uncertainty-recap-coco-fixed-methods-matched-sweep
+model_id: CompVis/stable-diffusion-v1-4
+
+defaults:
+  device: cuda
+  num_steps: 20
+  guidance_scale: 7.5
+  guidance_start_step: 0
+  guidance_n_steps: 8
+  percentile: 0.95
+  lr: 1.0
+  height: 512
+  width: 512
+  num_mc: 5
+
+  laplace_mode: last_layer
+  n_ref: 1
+  n_pairs: 20
+  n_mc_subnet: 4
+  subnet_max_params: 20000
+
+seeds: [42]
+prompts:
+  - "a photo of a cat"
+
+sweep:
+  - name: fixed_baseline
+    enabled: true
+    methods: [baseline]
+
+  # From the best aleatoric run reported by the team:
+  # guidance_start_step=0, guidance_n_steps=8, num_mc=5, num_steps=20.
+  - name: fixed_aleatoric
+    enabled: true
+    methods: [aleatoric]
+    guidance_start_step: 0
+    guidance_n_steps: 8
+    percentile: 0.95
+    lr: 1.0
+    num_mc: 5
+
+  # sweep_uq_sd.py searched lr in [0.05, 0.8], percentile in [0.75, 0.97],
+  # n_ref=1, num_mc=3 for epistemic methods. This keeps the first comparison
+  # in that range and avoids the artifact-prone lr=1.0 setup.
+  - name: fixed_gradient
+    enabled: true
+    methods: [gradient]
+    guidance_start_step: 0
+    guidance_n_steps: 8
+    percentile: 0.90
+    lr: 0.30
+    num_mc: 3
+    n_ref: 1
+    n_pairs: 20
+    laplace_mode: last_layer
+
+  - name: fixed_resampling
+    enabled: true
+    methods: [resampling]
+    guidance_start_step: 0
+    guidance_n_steps: 8
+    percentile: 0.90
+    lr: 0.30
+    num_mc: 3
+    n_ref: 1
+    n_pairs: 20
+    laplace_mode: last_layer
