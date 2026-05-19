@@ -63,25 +63,31 @@ def auto_device() -> str:
     return "cpu"
 
 
-def compute_clip_score(image_np: np.ndarray, prompt: str, device: str) -> float | None:
-    try:
-        from PIL import Image
+class ClipScorer:
+    def __init__(self, device: str = "cpu") -> None:
         from transformers import CLIPModel, CLIPProcessor
 
-        model = CLIPModel.from_pretrained(
+        self.device = device
+        self.model = CLIPModel.from_pretrained(
             "openai/clip-vit-base-patch32", use_safetensors=True
         ).to(device)
-        processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-        pil_image = Image.fromarray(image_np)
-        inputs = processor(
-            text=[prompt], images=pil_image, return_tensors="pt", padding=True
-        ).to(device)
-        with torch.no_grad():
-            logits = model(**inputs).logits_per_image
-        return float(logits[0, 0].cpu())
-    except Exception as e:
-        print(f"[warn] CLIPScore failed: {e}")
-        return None
+        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        self.model.eval()
+
+    def __call__(self, image_np: np.ndarray, prompt: str) -> float | None:
+        try:
+            from PIL import Image
+
+            pil_image = Image.fromarray(image_np)
+            inputs = self.processor(
+                text=[prompt], images=pil_image, return_tensors="pt", padding=True
+            ).to(self.device)
+            with torch.no_grad():
+                logits = self.model(**inputs).logits_per_image
+            return float(logits[0, 0].cpu())
+        except Exception as e:
+            print(f"[warn] CLIPScore failed: {e}")
+            return None
 
 
 def tensor_to_uint8(t: torch.Tensor) -> np.ndarray:
@@ -119,10 +125,27 @@ EVAL_PROMPTS: list[tuple[str, int]] = [
     ("a cat sitting on a windowsill watching rain", 33),
     ("a field of sunflowers under a dramatic stormy sky", 88),
     ("a medieval castle on a cliff above the ocean", 11),
+    ("a wooden chair beside a small round table", 303),
+    ("a blue bicycle leaning against a brick wall", 404),
+    ("a bowl of fresh strawberries on a kitchen counter", 505),
+    ("a sailboat on calm water during golden hour", 606),
+    ("a black camera on a clean white desk", 707),
+    ("a small cabin beside a frozen lake", 808),
+    ("a cup of coffee next to an open notebook", 909),
+    ("a city street with taxis and pedestrians", 101),
+    ("a brown dog running through shallow water", 202),
+    ("a vase of tulips near a sunny window", 3030),
 ]
 
 
-def run_sweep() -> None:
+def select_eval_prompts(cfg: wandb.Config) -> list[tuple[str, int]]:
+    n_prompts = int(getattr(cfg, "num_eval_prompts", len(EVAL_PROMPTS)))
+    if n_prompts <= 0:
+        raise ValueError("num_eval_prompts must be positive")
+    return EVAL_PROMPTS[:min(n_prompts, len(EVAL_PROMPTS))]
+
+
+def run_sweep(device_override: str | None = None) -> None:
     """Single sweep run — called by wandb agent.
 
     Expects cfg.method to be "gradient", "resampling", or "aleatoric".
@@ -130,8 +153,9 @@ def run_sweep() -> None:
     """
     with wandb.init() as run:
         cfg = wandb.config
-        device = auto_device()
+        device = device_override or auto_device()
         method: str = cfg.method
+        eval_prompts = select_eval_prompts(cfg)
 
         print(f"\n[sweep] run={run.name}  method={method}  device={device}")
         print(f"[sweep] lr={getattr(cfg, 'lr', '-')}  "
@@ -155,11 +179,18 @@ def run_sweep() -> None:
         if hasattr(pipe, "enable_attention_slicing"):
             pipe.enable_attention_slicing()
 
+        clip_scorer = ClipScorer(device="cpu")
+        baseline_clips: list[float] = []
+        method_clips: list[float] = []
         delta_clips: list[float] = []
-        image_table = wandb.Table(columns=["prompt", "baseline", method, "delta_clip"])
+        mean_gamma2_values: list[float] = []
+        p95_gamma2_values: list[float] = []
+        image_table = wandb.Table(
+            columns=["prompt", "baseline", method, "baseline_clip", "method_clip", "delta_clip"]
+        )
 
-        for i, (prompt, seed) in enumerate(EVAL_PROMPTS):
-            print(f"\n[sweep] prompt {i+1}/{len(EVAL_PROMPTS)}: {prompt[:50]}…")
+        for i, (prompt, seed) in enumerate(eval_prompts):
+            print(f"\n[sweep] prompt {i+1}/{len(eval_prompts)}: {prompt[:50]}…")
 
             base_kwargs = dict(
                 prompt=prompt,
@@ -184,6 +215,8 @@ def run_sweep() -> None:
             elif method == "aleatoric":
                 method_kwargs = dict(
                     num_mc_samples=cfg.num_mc,
+                    percentile=getattr(cfg, "percentile", 0.95),
+                    lr=getattr(cfg, "lr", 1.0),
                 )
 
             baseline_out: UQComparisonOutput = pipe(
@@ -196,25 +229,45 @@ def run_sweep() -> None:
             baseline_img = tensor_to_uint8(baseline_out.image)
             method_img = tensor_to_uint8(method_out.image)
 
-            baseline_clip = compute_clip_score(baseline_img, prompt, device="cpu") or 0.0
-            method_clip = compute_clip_score(method_img, prompt, device="cpu") or 0.0
+            baseline_clip = clip_scorer(baseline_img, prompt) or 0.0
+            method_clip = clip_scorer(method_img, prompt) or 0.0
             delta = method_clip - baseline_clip
+            baseline_clips.append(baseline_clip)
+            method_clips.append(method_clip)
             delta_clips.append(delta)
+            mean_gamma2, p95_gamma2 = umap_stats(method_out.uncertainty_map)
+            if method_out.uncertainty_map is not None:
+                mean_gamma2_values.append(mean_gamma2)
+                p95_gamma2_values.append(p95_gamma2)
 
             image_table.add_data(
                 prompt,
                 wandb.Image(baseline_img, caption=f"baseline | {prompt[:30]}"),
                 wandb.Image(method_img, caption=f"{method} Δ{delta:+.2f}"),
+                baseline_clip,
+                method_clip,
                 delta,
             )
-            print(f"[sweep] prompt {i+1} ΔCLIP={delta:+.4f}")
+            print(
+                f"[sweep] prompt {i+1} CLIP base={baseline_clip:.4f} "
+                f"{method}={method_clip:.4f} Δ={delta:+.4f}"
+            )
+
+            del baseline_out, method_out
+            if device == "cuda":
+                torch.cuda.empty_cache()
 
         mean_delta = float(np.mean(delta_clips))
         std_delta = float(np.std(delta_clips))
 
         wandb.log({
+            "baseline_clip": float(np.mean(baseline_clips)),
+            f"{method}_clip": float(np.mean(method_clips)),
             "delta_clip": mean_delta,
             "delta_clip_std": std_delta,
+            "mean_gamma2": float(np.mean(mean_gamma2_values)) if mean_gamma2_values else 0.0,
+            "p95_gamma2": float(np.mean(p95_gamma2_values)) if p95_gamma2_values else 0.0,
+            "num_eval_prompts": len(eval_prompts),
             "images/per_prompt": image_table,
         })
         print(f"\n[sweep] DONE  mean ΔCLIP={mean_delta:+.4f} ± {std_delta:.4f}")
@@ -258,7 +311,7 @@ def main() -> None:
 
     wandb.agent(
         sweep_id=args.sweep_id,
-        function=run_sweep,
+        function=lambda: run_sweep(device_override=args.device),
         project=PROJECT,
         entity=ENTITY,
         count=args.count,

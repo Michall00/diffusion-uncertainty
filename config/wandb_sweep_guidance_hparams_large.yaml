@@ -1,0 +1,51 @@
+program: scripts/sweep_uq_sd.py
+method: bayes
+run_cap: 150
+metric:
+  goal: maximize
+  name: delta_clip
+
+parameters:
+  method:
+    values: ["aleatoric", "gradient", "resampling"]
+
+  model_id:
+    values:
+      - "CompVis/stable-diffusion-v1-4"
+      - "runwayml/stable-diffusion-v1-5"
+
+  num_steps:
+    values: [20, 30, 50]
+
+  guidance_scale:
+    values: [5.0, 7.5, 10.0]
+
+  guidance_start_step:
+    values: [0, 2, 4, 6, 10]
+
+  guidance_n_steps:
+    values: [4, 8, 12, 20]
+
+  num_mc:
+    values: [3, 5, 8]
+
+  # Fixed epistemic parameters. This sweep is intentionally focused on the
+  # high-level guidance hyperparameters visible in W&B config panels.
+  lr:
+    value: 0.20
+  percentile:
+    value: 0.90
+  n_ref:
+    value: 1
+  n_pairs:
+    value: 20
+  laplace_mode:
+    value: "last_layer"
+  n_mc_subnet:
+    value: 4
+  subnet_max_params:
+    value: 20000
+
+  # Used by the current sweep_uq_sd.py; ignored by older versions.
+  num_eval_prompts:
+    value: 20
