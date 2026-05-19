@@ -1,0 +1,107 @@
+# Top candidates selected from wandb_runs_export.csv.
+#
+# Use this as --base-config for scripts/prepare_recap_coco_sweep.py.
+# Each trial runs [baseline, method] with the same model/sampling settings,
+# so visual inspection and FID/CLIP can be interpreted per candidate.
+#
+# Selected from the 50-run W&B sweep:
+# - best mean delta_clip per method
+# - one more stable candidate per method using delta_clip - 0.5 * delta_clip_std
+
+project_name: diffusion-uncertainty-top-candidates-eval
+model_id: CompVis/stable-diffusion-v1-4
+
+defaults:
+  device: cuda
+  num_steps: 50
+  guidance_scale: 7.5
+  guidance_start_step: 0
+  guidance_n_steps: 20
+  percentile: 0.90
+  lr: 0.20
+  height: 512
+  width: 512
+  num_mc: 3
+
+  laplace_mode: last_layer
+  n_ref: 1
+  n_pairs: 20
+  n_mc_subnet: 4
+  subnet_max_params: 20000
+
+seeds: [42]
+prompts:
+  - "a photo of a cat"
+
+sweep:
+  # Aleatoric: best mean delta_clip in the exported run table.
+  # royal-sweep-46: delta_clip=+0.2457, delta_clip_std=0.7743
+  - name: top_aleatoric_royal_46
+    enabled: true
+    methods: [baseline, aleatoric]
+    model_id: CompVis/stable-diffusion-v1-4
+    num_steps: 20
+    guidance_scale: 10.0
+    guidance_start_step: 0
+    guidance_n_steps: 20
+    num_mc: 3
+
+  # Aleatoric: most conservative positive candidate.
+  # earnest-sweep-21: delta_clip=+0.1254, delta_clip_std=0.2145
+  - name: stable_aleatoric_earnest_21
+    enabled: true
+    methods: [baseline, aleatoric]
+    model_id: CompVis/stable-diffusion-v1-4
+    num_steps: 50
+    guidance_scale: 10.0
+    guidance_start_step: 6
+    guidance_n_steps: 4
+    num_mc: 8
+
+  # Gradient: best mean delta_clip.
+  # exalted-sweep-48: delta_clip=+0.4523, delta_clip_std=0.8827
+  - name: top_gradient_exalted_48
+    enabled: true
+    methods: [baseline, gradient]
+    model_id: CompVis/stable-diffusion-v1-4
+    num_steps: 50
+    guidance_scale: 7.5
+    guidance_start_step: 6
+    guidance_n_steps: 20
+    num_mc: 3
+
+  # Gradient: most conservative positive candidate.
+  # usual-sweep-34: delta_clip=+0.1789, delta_clip_std=0.3256
+  - name: stable_gradient_usual_34
+    enabled: true
+    methods: [baseline, gradient]
+    model_id: runwayml/stable-diffusion-v1-5
+    num_steps: 20
+    guidance_scale: 7.5
+    guidance_start_step: 4
+    guidance_n_steps: 4
+    num_mc: 5
+
+  # Resampling: best mean delta_clip.
+  # devoted-sweep-25: delta_clip=+0.4874, delta_clip_std=0.9238
+  - name: top_resampling_devoted_25
+    enabled: true
+    methods: [baseline, resampling]
+    model_id: CompVis/stable-diffusion-v1-4
+    num_steps: 50
+    guidance_scale: 10.0
+    guidance_start_step: 4
+    guidance_n_steps: 20
+    num_mc: 3
+
+  # Resampling: high mean with lower std than the best candidate.
+  # ruby-sweep-15: delta_clip=+0.3337, delta_clip_std=0.6379
+  - name: stable_resampling_ruby_15
+    enabled: true
+    methods: [baseline, resampling]
+    model_id: runwayml/stable-diffusion-v1-5
+    num_steps: 50
+    guidance_scale: 10.0
+    guidance_start_step: 10
+    guidance_n_steps: 8
+    num_mc: 8
