@@ -1,0 +1,36 @@
+# Best aleatoric setting from previous Recap-COCO experiments.
+# Used as a base config for scripts/prepare_recap_coco_sweep.py.
+
+project_name: diffusion-uncertainty-recap-coco-best-aleatoric
+model_id: CompVis/stable-diffusion-v1-4
+
+defaults:
+  device: cuda
+  num_steps: 20
+  guidance_scale: 7.5
+  guidance_start_step: 0
+  guidance_n_steps: 8
+  percentile: 0.95
+  lr: 1.0
+  height: 512
+  width: 512
+  num_mc: 5
+  n_ref: 1
+  n_pairs: 1
+  n_mc_subnet: 1
+  subnet_max_params: 1
+  laplace_mode: last_layer
+
+seeds: [42]
+prompts:
+  - "a photo of a cat"
+
+sweep:
+  - name: best_aleatoric
+    enabled: true
+    methods: [baseline, aleatoric]
+    laplace_mode: last_layer
+    guidance_n_steps: 8
+    num_mc: 5
+    percentile: 0.95
+    lr: 1.0

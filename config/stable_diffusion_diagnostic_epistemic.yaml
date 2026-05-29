@@ -1,0 +1,113 @@
+# Targeted diagnostic sweep for epistemic guidance.
+#
+# Use this as a base config for prepare_recap_coco_sweep.py. It is designed to
+# answer whether poor results come from overly aggressive epistemic settings.
+# Keep prompt count small first: 10-25 prompts is enough to inspect trends.
+
+project_name: diffusion-uncertainty-epistemic-diagnostic
+model_id: CompVis/stable-diffusion-v1-4
+
+defaults:
+  device: cuda
+  num_steps: 20
+  guidance_scale: 7.5
+  guidance_start_step: 0
+  guidance_n_steps: 8
+  percentile: 0.90
+  lr: 0.30
+  height: 512
+  width: 512
+  num_mc: 3
+
+  laplace_mode: last_layer
+  n_ref: 1
+  n_pairs: 20
+  n_mc_subnet: 4
+  subnet_max_params: 20000
+
+seeds: [42]
+prompts:
+  - "a photo of a cat"
+
+sweep:
+  - name: fixed_baseline
+    enabled: true
+    methods: [baseline]
+
+  - name: fixed_aleatoric_best
+    enabled: true
+    methods: [aleatoric]
+    guidance_start_step: 0
+    guidance_n_steps: 8
+    percentile: 0.95
+    lr: 1.0
+    num_mc: 5
+
+  # Same window as the current fixed config, but probe weaker correction.
+  - name: gradient_lr_probe
+    enabled: true
+    methods: [gradient]
+    guidance_start_step: 0
+    guidance_n_steps: 8
+    percentile: 0.90
+    lr: [0.05, 0.10, 0.20, 0.30]
+    num_mc: 3
+    n_ref: 1
+    n_pairs: 20
+
+  - name: resampling_lr_probe
+    enabled: true
+    methods: [resampling]
+    guidance_start_step: 0
+    guidance_n_steps: 8
+    percentile: 0.90
+    lr: [0.05, 0.10, 0.20, 0.30]
+    num_mc: 3
+    n_ref: 1
+    n_pairs: 20
+
+  # Later guidance often preserves global structure better. Keep lr moderate.
+  - name: gradient_window_probe
+    enabled: true
+    methods: [gradient]
+    guidance_start_step: [2, 4, 6]
+    guidance_n_steps: [4, 6]
+    percentile: 0.90
+    lr: 0.20
+    num_mc: 3
+    n_ref: 1
+    n_pairs: 20
+
+  - name: resampling_window_probe
+    enabled: true
+    methods: [resampling]
+    guidance_start_step: [2, 4, 6]
+    guidance_n_steps: [4, 6]
+    percentile: 0.90
+    lr: 0.20
+    num_mc: 3
+    n_ref: 1
+    n_pairs: 20
+
+  # If lr/window looks sane, check whether a wider uncertainty mask helps.
+  - name: gradient_percentile_probe
+    enabled: false
+    methods: [gradient]
+    guidance_start_step: 4
+    guidance_n_steps: 6
+    percentile: [0.75, 0.85, 0.90, 0.95]
+    lr: 0.20
+    num_mc: 3
+    n_ref: 1
+    n_pairs: 20
+
+  - name: resampling_percentile_probe
+    enabled: false
+    methods: [resampling]
+    guidance_start_step: 4
+    guidance_n_steps: 6
+    percentile: [0.75, 0.85, 0.90, 0.95]
+    lr: 0.20
+    num_mc: 3
+    n_ref: 1
+    n_pairs: 20

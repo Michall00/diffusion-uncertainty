@@ -1,0 +1,50 @@
+program: scripts/sweep_uq_sd.py
+method: bayes
+run_cap: 80
+metric:
+  goal: maximize
+  name: delta_clip
+
+parameters:
+  method:
+    value: "aleatoric"
+
+  lr:
+    distribution: log_uniform_values
+    min: 0.05
+    max: 1.2
+
+  percentile:
+    distribution: uniform
+    min: 0.75
+    max: 0.99
+
+  guidance_start_step:
+    values: [0, 5, 10, 15, 20]
+
+  guidance_n_steps:
+    values: [5, 10, 15, 20, 30]
+
+  num_mc:
+    values: [3, 5, 8]
+
+  guidance_scale:
+    values: [5.0, 7.5, 10.0]
+
+  # Fixed.
+  model_id:
+    value: "CompVis/stable-diffusion-v1-4"
+  num_steps:
+    value: 50
+  num_eval_prompts:
+    value: 20
+  n_ref:
+    value: 1
+  n_pairs:
+    value: 20
+  laplace_mode:
+    value: "last_layer"
+  n_mc_subnet:
+    value: 4
+  subnet_max_params:
+    value: 20000

@@ -90,6 +90,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wandb-run-name", type=str, default=None)
     p.add_argument("--wandb-mode", choices=["online", "offline", "disabled"],
                    default="online")
+    p.add_argument("--wandb-run-per-config", "--wandb-run-per-trial",
+                   action="store_true", dest="wandb_run_per_config",
+                   help="Create a separate W&B run for every expanded sweep config")
     p.add_argument("--wandb-log-images", choices=["none", "grid", "all"],
                    default="grid")
     p.add_argument("--overview-max-rows", type=int, default=12,
@@ -327,8 +330,26 @@ def append_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("")
+        return
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def init_wandb(args: argparse.Namespace, cfg: dict[str, Any], run_name: str):
-    if not args.wandb:
+    if not args.wandb or args.dry_run:
         return None
     try:
         import wandb
@@ -389,7 +410,7 @@ def wandb_log_result(
             payload["metrics/mean_gamma2"] = mean_g2
         if p95_g2 is not None:
             payload["metrics/p95_gamma2"] = p95_g2
-        wandb.log(payload, step=step)
+        wandb_run.log(payload, step=step)
 
     if args.wandb_log_images == "none":
         return
@@ -410,7 +431,7 @@ def wandb_log_result(
             if umap_path.exists():
                 images[f"uncertainty/{method}_umap"] = wandb.Image(str(umap_path))
     if images:
-        wandb.log(images, step=step)
+        wandb_run.log(images, step=step)
 
 
 def compute_fid(args: argparse.Namespace, out_root: Path) -> Path:
@@ -513,7 +534,7 @@ def wandb_log_fid(wandb_run: Any, fid_csv: Path) -> None:
         }
         if fid is not None:
             payload["fid/value"] = fid
-        wandb.log(payload, step=10_000_000 + idx)
+        wandb_run.log(payload, step=10_000_000 + idx)
 
 
 def wandb_log_csv_table(wandb_run: Any, csv_path: Path, table_name: str) -> None:
@@ -528,7 +549,7 @@ def wandb_log_csv_table(wandb_run: Any, csv_path: Path, table_name: str) -> None
     table = wandb.Table(columns=list(rows[0]))
     for row in rows:
         table.add_data(*[row.get(column, "") for column in table.columns])
-    wandb.log({table_name: table})
+    wandb_run.log({table_name: table})
 
 
 def wandb_log_overview(wandb_run: Any, overview_path: Path) -> None:
@@ -536,7 +557,271 @@ def wandb_log_overview(wandb_run: Any, overview_path: Path) -> None:
         return
     import wandb
 
-    wandb.log({"images/method_overview": wandb.Image(str(overview_path))})
+    wandb_run.log({"images/method_overview": wandb.Image(str(overview_path))})
+
+
+def read_csv(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open() as f:
+        return list(csv.DictReader(f))
+
+
+def group_rows_by_trial(rows: list[dict[str, str]]) -> dict[int, list[dict[str, str]]]:
+    grouped: dict[int, list[dict[str, str]]] = {}
+    for row in rows:
+        try:
+            trial_index = int(row.get("trial_index", ""))
+        except ValueError:
+            continue
+        grouped.setdefault(trial_index, []).append(row)
+    return grouped
+
+
+def row_method_id(row: dict[str, str]) -> str:
+    return row.get("Method ID") or row.get("method") or row.get("Method", "").lower().replace(" ", "_")
+
+
+def mean_value(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def std_value(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    mu = sum(values) / len(values)
+    return math.sqrt(sum((value - mu) ** 2 for value in values) / (len(values) - 1))
+
+
+def set_payload_value(payload: dict[str, Any], key: str, value: float | int | str | None) -> None:
+    if value is None:
+        return
+    payload[key] = value
+
+
+def summarize_trial_for_wandb(
+    trial_index: int,
+    per_prompt_rows: list[dict[str, str]],
+    fid_rows: list[dict[str, str]],
+    job_counts: dict[str, int],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "trial/index": trial_index,
+        "jobs/ok": job_counts.get("ok", 0),
+        "jobs/skipped": job_counts.get("skipped", 0),
+        "jobs/failed": job_counts.get("failed", 0),
+    }
+    by_method: dict[str, list[dict[str, str]]] = {}
+    baseline_clip: dict[tuple[str, str], float] = {}
+    for row in per_prompt_rows:
+        method = row_method_id(row)
+        by_method.setdefault(method, []).append(row)
+        clip = parse_float(row.get("CLIPScore", "N/A"))
+        if method == "baseline" and clip is not None:
+            baseline_clip[(row.get("prompt", ""), row.get("seed", ""))] = clip
+
+    guided_delta_means: list[float] = []
+    for method, method_rows in sorted(by_method.items()):
+        clip_values: list[float] = []
+        delta_values: list[float] = []
+        mean_gamma2_values: list[float] = []
+        p95_gamma2_values: list[float] = []
+        for row in method_rows:
+            clip = parse_float(row.get("CLIPScore", "N/A"))
+            if clip is not None:
+                clip_values.append(clip)
+                baseline = baseline_clip.get((row.get("prompt", ""), row.get("seed", "")))
+                if method != "baseline" and baseline is not None:
+                    delta_values.append(clip - baseline)
+            mean_g2 = parse_float(row.get("Mean gamma2", row.get("Mean γ²", "N/A")))
+            p95_g2 = parse_float(row.get("P95 gamma2", row.get("P95 γ²", "N/A")))
+            if mean_g2 is not None:
+                mean_gamma2_values.append(mean_g2)
+            if p95_g2 is not None:
+                p95_gamma2_values.append(p95_g2)
+
+        prefix = f"metrics/{method}"
+        set_payload_value(payload, f"{prefix}/n_eval", len(method_rows))
+        set_payload_value(payload, f"{prefix}/clip_mean", mean_value(clip_values))
+        set_payload_value(payload, f"{prefix}/clip_std", std_value(clip_values))
+        set_payload_value(payload, f"{prefix}/mean_gamma2", mean_value(mean_gamma2_values))
+        set_payload_value(payload, f"{prefix}/p95_gamma2", mean_value(p95_gamma2_values))
+        if delta_values:
+            delta_mean = mean_value(delta_values)
+            guided_delta_means.append(delta_mean or 0.0)
+            set_payload_value(payload, f"{prefix}/delta_clip_vs_baseline_mean", delta_mean)
+            set_payload_value(payload, f"{prefix}/delta_clip_vs_baseline_std", std_value(delta_values))
+            set_payload_value(
+                payload,
+                f"{prefix}/delta_clip_positive_rate",
+                sum(value > 0 for value in delta_values) / len(delta_values),
+            )
+
+    if guided_delta_means:
+        set_payload_value(payload, "metrics/best_guided_delta_clip", max(guided_delta_means))
+
+    fid_by_method: dict[str, float] = {}
+    for row in fid_rows:
+        method = row.get("method", "")
+        fid = parse_float(row.get("fid", "N/A"))
+        if not method or fid is None:
+            continue
+        fid_by_method[method] = fid
+        payload[f"fid/{method}/value"] = fid
+        payload[f"fid/{method}/status"] = row.get("status", "")
+        set_payload_value(payload, f"fid/{method}/n_images", parse_float(row.get("n_images", "N/A")))
+        if row.get("reference"):
+            payload["fid/reference"] = row["reference"]
+
+    baseline_fid = fid_by_method.get("baseline")
+    if baseline_fid is not None:
+        for method, fid in fid_by_method.items():
+            if method != "baseline":
+                payload[f"fid/{method}/delta_vs_baseline"] = fid - baseline_fid
+    return payload
+
+
+def wandb_trial_run_name(base_name: str, trial: dict[str, Any], trial_index: int) -> str:
+    return f"{base_name}__{trial_index:04d}_{slugify(str(trial['group']), 50)}"
+
+
+def wandb_trial_config(
+    args: argparse.Namespace,
+    cfg: dict[str, Any],
+    run_name: str,
+    out_root: Path,
+    trial: dict[str, Any],
+    trial_index: int,
+    prompt_seed_pairs: list[tuple[str, int]],
+) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "config_path": str(args.config),
+        "sweep_run_name": run_name,
+        "sweep_out_dir": str(out_root),
+        "trial_index": trial_index,
+        "prompt_seed_pairs_count": len(prompt_seed_pairs),
+        "no_clip": args.no_clip,
+        "compute_clip": args.compute_clip,
+        "compute_fid": args.compute_fid,
+        "fid_reference_dir": str(args.fid_reference_dir) if args.fid_reference_dir else None,
+        "sweep_project_name": cfg.get("project_name"),
+    }
+    config.update(trial)
+    if isinstance(config.get("methods"), list):
+        config["methods"] = " ".join(str(method) for method in config["methods"])
+    return config
+
+
+def wandb_log_trial_images(wandb_run: Any, args: argparse.Namespace, trial_dir: Path, trial: dict[str, Any]) -> None:
+    if args.wandb_log_images == "none":
+        return
+    import wandb
+
+    result_dirs = sorted(
+        path for path in trial_dir.iterdir()
+        if path.is_dir() and (path / "comparison_grid.png").exists()
+    )
+    images = [
+        wandb.Image(
+            str(result_dir / "comparison_grid.png"),
+            caption=f"{trial['group']} | {result_dir.name}",
+        )
+        for result_dir in result_dirs[:args.overview_max_rows]
+    ]
+    if images:
+        wandb_run.log({"images/comparison_grids": images})
+
+
+def wandb_log_per_config_runs(
+    args: argparse.Namespace,
+    cfg: dict[str, Any],
+    run_name: str,
+    out_root: Path,
+    trials: list[dict[str, Any]],
+    prompt_seed_pairs: list[tuple[str, int]],
+    trial_job_counts: dict[int, dict[str, int]],
+    fid_csv: Path | None,
+    clip_csv: Path | None,
+    failures_csv: Path,
+) -> None:
+    if not args.wandb or args.dry_run:
+        return
+    try:
+        import wandb
+    except ImportError as exc:
+        raise SystemExit("wandb is not installed in this environment") from exc
+
+    project = args.wandb_project or cfg.get("project_name") or "diffusion-uncertainty-uq"
+    base_name = args.wandb_run_name or run_name
+    per_prompt_csv = out_root / "per_prompt_metrics.csv"
+    aggregate_csv = out_root / "all_sweep_results.csv"
+    per_prompt_rows = read_csv(per_prompt_csv if per_prompt_csv.exists() else aggregate_csv)
+    fid_rows = read_csv(fid_csv) if fid_csv is not None else []
+    clip_rows = read_csv(clip_csv) if clip_csv is not None else []
+    failure_rows = read_csv(failures_csv)
+
+    per_prompt_by_trial = group_rows_by_trial(per_prompt_rows)
+    fid_by_trial = group_rows_by_trial(fid_rows)
+    clip_by_trial = group_rows_by_trial(clip_rows)
+    failures_by_trial = group_rows_by_trial(failure_rows)
+
+    for trial_index, trial in enumerate(trials):
+        t_slug = trial_slug(trial, trial_index)
+        trial_dir = out_root / t_slug
+        trial_wandb_dir = trial_dir / "wandb"
+        trial_wandb_dir.mkdir(parents=True, exist_ok=True)
+        trial_per_prompt_csv = trial_wandb_dir / "per_prompt_metrics.csv"
+        trial_fid_csv = trial_wandb_dir / "fid_results.csv"
+        trial_clip_csv = trial_wandb_dir / "clip_results.csv"
+        trial_failures_csv = trial_wandb_dir / "failures.csv"
+        write_csv(trial_per_prompt_csv, per_prompt_by_trial.get(trial_index, []))
+        write_csv(trial_fid_csv, fid_by_trial.get(trial_index, []))
+        write_csv(trial_clip_csv, clip_by_trial.get(trial_index, []))
+        write_csv(trial_failures_csv, failures_by_trial.get(trial_index, []))
+
+        wandb_run = wandb.init(
+            project=project,
+            entity=args.wandb_entity,
+            name=wandb_trial_run_name(base_name, trial, trial_index),
+            mode=args.wandb_mode,
+            reinit=True,
+            config=wandb_trial_config(
+                args, cfg, run_name, out_root, trial, trial_index, prompt_seed_pairs
+            ),
+        )
+        payload = summarize_trial_for_wandb(
+            trial_index,
+            per_prompt_by_trial.get(trial_index, []),
+            fid_by_trial.get(trial_index, []),
+            trial_job_counts.get(trial_index, {}),
+        )
+        wandb_run.log(payload)
+        for key, value in payload.items():
+            wandb_run.summary[key] = value
+
+        wandb_log_csv_table(wandb_run, trial_per_prompt_csv, "tables/per_prompt_metrics")
+        if fid_by_trial.get(trial_index):
+            wandb_log_csv_table(wandb_run, trial_fid_csv, "tables/fid_results")
+        if clip_by_trial.get(trial_index):
+            wandb_log_csv_table(wandb_run, trial_clip_csv, "tables/clip_results")
+        if failures_by_trial.get(trial_index):
+            wandb_log_csv_table(wandb_run, trial_failures_csv, "tables/failures")
+        wandb_log_trial_images(wandb_run, args, trial_dir, trial)
+
+        artifact = wandb.Artifact(
+            f"uq_sweep_results_{trial_index:04d}_{slugify(str(trial['group']), 50)}",
+            type="results",
+        )
+        artifact.add_file(str(trial_dir / "trial_config.json"))
+        artifact.add_file(str(trial_per_prompt_csv))
+        if fid_by_trial.get(trial_index):
+            artifact.add_file(str(trial_fid_csv))
+        if clip_by_trial.get(trial_index):
+            artifact.add_file(str(trial_clip_csv))
+        if failures_by_trial.get(trial_index):
+            artifact.add_file(str(trial_failures_csv))
+        wandb_run.log_artifact(artifact)
+        wandb_run.finish()
 
 
 def main() -> None:
@@ -563,9 +848,13 @@ def main() -> None:
     print(f"[sweep] {len(trials)} trials × {len(prompt_seed_pairs)} prompt/seed pairs = {total_jobs} jobs")
     print(f"[sweep] dry_run={args.dry_run} skip_existing={args.skip_existing}")
 
-    wandb_run = init_wandb(args, cfg, run_name)
+    wandb_run = None if args.wandb_run_per_config else init_wandb(args, cfg, run_name)
     aggregate_csv = out_root / "all_sweep_results.csv"
     failures_csv = out_root / "failures.csv"
+    trial_job_counts: dict[int, dict[str, int]] = {
+        index: {"ok": 0, "skipped": 0, "failed": 0}
+        for index in range(len(trials))
+    }
 
     step = 0
     ok = 0
@@ -590,6 +879,7 @@ def main() -> None:
             if args.skip_existing and (result_dir / "results.npz").exists():
                 print("[sweep] SKIP existing results.npz")
                 skipped += 1
+                trial_job_counts[trial_index]["skipped"] += 1
             else:
                 cmd = build_compare_cmd(prompt, seed, trial, trial_dir)
                 result_dir.mkdir(parents=True, exist_ok=True)
@@ -597,6 +887,7 @@ def main() -> None:
                 code = run_command(cmd, log_path, args.dry_run, stream=args.stream_logs)
                 if code != 0:
                     failed += 1
+                    trial_job_counts[trial_index]["failed"] += 1
                     append_csv(failures_csv, [{
                         "trial_index": trial_index,
                         "group": trial["group"],
@@ -609,6 +900,7 @@ def main() -> None:
                     print_log_tail(log_path)
                     continue
                 ok += 1
+                trial_job_counts[trial_index]["ok"] += 1
 
             eval_cmd = build_evaluate_cmd(result_dir, args.no_clip)
             eval_code = run_command(eval_cmd, log_path, args.dry_run, stream=args.stream_logs)
@@ -684,6 +976,20 @@ def main() -> None:
                 artifact.add_file(str(failures_csv))
             wandb_run.log_artifact(artifact)
         wandb_run.finish()
+
+    if args.wandb_run_per_config:
+        wandb_log_per_config_runs(
+            args,
+            cfg,
+            run_name,
+            out_root,
+            trials,
+            prompt_seed_pairs,
+            trial_job_counts,
+            fid_csv,
+            clip_csv,
+            failures_csv,
+        )
 
     print(f"\n[sweep] Done: {ok} OK, {skipped} skipped, {failed} failed.")
     print(f"[sweep] Aggregated CSV: {aggregate_csv}")

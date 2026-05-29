@@ -152,14 +152,19 @@ def std_or_na(values: list[float]) -> str:
 
 def summarize_eval(rows: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
     by_method: dict[str, list[dict[str, str]]] = defaultdict(list)
-    baseline_clip: dict[tuple[str, str], float] = {}
+    baseline_clip: dict[tuple[str, str, str, str], float] = {}
 
     for row in rows:
         method = method_id(row)
         by_method[method].append(row)
         clip = parse_float(row.get("CLIPScore"))
         if method == "baseline" and clip is not None:
-            baseline_clip[(row.get("prompt", ""), row.get("seed", ""))] = clip
+            baseline_clip[(
+                row.get("trial_index", ""),
+                row.get("group", ""),
+                row.get("prompt", ""),
+                row.get("seed", ""),
+            )] = clip
 
     summary: dict[str, dict[str, Any]] = {}
     for method, method_rows in by_method.items():
@@ -174,7 +179,12 @@ def summarize_eval(rows: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
             clip = parse_float(row.get("CLIPScore"))
             if clip is not None:
                 clip_values.append(clip)
-                base = baseline_clip.get((row.get("prompt", ""), row.get("seed", "")))
+                base = baseline_clip.get((
+                    row.get("trial_index", ""),
+                    row.get("group", ""),
+                    row.get("prompt", ""),
+                    row.get("seed", ""),
+                ))
                 if base is not None and method != "baseline":
                     delta_values.append(clip - base)
 
