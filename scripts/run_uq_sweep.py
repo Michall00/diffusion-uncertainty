@@ -58,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run a Stable Diffusion UQ guidance sweep")
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--out-dir", type=Path, default=Path("outputs/uq_sweep"))
+    p.add_argument("--resume-dir", type=Path, default=None,
+                   help="Resume/rebuild an existing outputs/uq_sweep/<run> directory")
     p.add_argument("--device", type=str, default=None, help="Override config device")
     p.add_argument("--model-id", type=str, default=None, help="Override config model_id")
     p.add_argument("--only-groups", nargs="+", default=None,
@@ -346,6 +348,30 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def backup_file(path: Path, suffix: str) -> None:
+    if not path.exists():
+        return
+    backup_path = path.with_name(f"{path.name}.{suffix}.bak")
+    counter = 1
+    while backup_path.exists():
+        backup_path = path.with_name(f"{path.name}.{suffix}.{counter}.bak")
+        counter += 1
+    path.replace(backup_path)
+
+
+def prepare_resume_outputs(out_root: Path, run_name: str) -> None:
+    suffix = f"resume_{run_name}"
+    for path in [
+        out_root / "all_sweep_results.csv",
+        out_root / "failures.csv",
+        out_root / "fid_results.csv",
+        out_root / "clip_results.csv",
+        out_root / "method_summary.csv",
+        out_root / "per_prompt_metrics.csv",
+    ]:
+        backup_file(path, suffix)
 
 
 def init_wandb(args: argparse.Namespace, cfg: dict[str, Any], run_name: str):
@@ -712,6 +738,38 @@ def wandb_trial_config(
     return config
 
 
+def init_wandb_trial_run(
+    args: argparse.Namespace,
+    cfg: dict[str, Any],
+    run_name: str,
+    out_root: Path,
+    trial: dict[str, Any],
+    trial_index: int,
+    prompt_seed_pairs: list[tuple[str, int]],
+):
+    if not args.wandb or args.dry_run:
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise SystemExit("wandb is not installed in this environment") from exc
+
+    project = args.wandb_project or cfg.get("project_name") or "diffusion-uncertainty-uq"
+    base_name = args.wandb_run_name or run_name
+    wandb_run = wandb.init(
+        project=project,
+        entity=args.wandb_entity,
+        name=wandb_trial_run_name(base_name, trial, trial_index),
+        mode=args.wandb_mode,
+        reinit=True,
+        config=wandb_trial_config(
+            args, cfg, run_name, out_root, trial, trial_index, prompt_seed_pairs
+        ),
+    )
+    wandb_run.log({"trial/index": trial_index, "trial/started": 1})
+    return wandb_run
+
+
 def wandb_log_trial_images(wandb_run: Any, args: argparse.Namespace, trial_dir: Path, trial: dict[str, Any]) -> None:
     if args.wandb_log_images == "none":
         return
@@ -743,6 +801,7 @@ def wandb_log_per_config_runs(
     fid_csv: Path | None,
     clip_csv: Path | None,
     failures_csv: Path,
+    trial_wandb_runs: dict[int, Any] | None = None,
 ) -> None:
     if not args.wandb or args.dry_run:
         return
@@ -779,16 +838,18 @@ def wandb_log_per_config_runs(
         write_csv(trial_clip_csv, clip_by_trial.get(trial_index, []))
         write_csv(trial_failures_csv, failures_by_trial.get(trial_index, []))
 
-        wandb_run = wandb.init(
-            project=project,
-            entity=args.wandb_entity,
-            name=wandb_trial_run_name(base_name, trial, trial_index),
-            mode=args.wandb_mode,
-            reinit=True,
-            config=wandb_trial_config(
-                args, cfg, run_name, out_root, trial, trial_index, prompt_seed_pairs
-            ),
-        )
+        wandb_run = (trial_wandb_runs or {}).get(trial_index)
+        if wandb_run is None:
+            wandb_run = wandb.init(
+                project=project,
+                entity=args.wandb_entity,
+                name=wandb_trial_run_name(base_name, trial, trial_index),
+                mode=args.wandb_mode,
+                reinit=True,
+                config=wandb_trial_config(
+                    args, cfg, run_name, out_root, trial, trial_index, prompt_seed_pairs
+                ),
+            )
         payload = summarize_trial_for_wandb(
             trial_index,
             per_prompt_by_trial.get(trial_index, []),
@@ -836,8 +897,15 @@ def main() -> None:
     if not trials:
         raise ValueError("No sweep trials selected")
 
-    run_name = datetime.now().strftime("uq_sweep_%Y%m%d_%H%M%S")
-    out_root = args.out_dir / run_name
+    if args.resume_dir is not None:
+        out_root = args.resume_dir
+        run_name = out_root.name
+        if not out_root.exists():
+            raise FileNotFoundError(f"--resume-dir does not exist: {out_root}")
+        prepare_resume_outputs(out_root, datetime.now().strftime("%Y%m%d_%H%M%S"))
+    else:
+        run_name = datetime.now().strftime("uq_sweep_%Y%m%d_%H%M%S")
+        out_root = args.out_dir / run_name
     out_root.mkdir(parents=True, exist_ok=True)
     with (out_root / "expanded_trials.json").open("w") as f:
         json.dump(trials, f, indent=2)
@@ -845,6 +913,8 @@ def main() -> None:
     total_jobs = len(trials) * len(prompt_seed_pairs)
     print(f"[sweep] config={args.config}")
     print(f"[sweep] output={out_root}")
+    if args.resume_dir is not None:
+        print(f"[sweep] resume_dir={args.resume_dir}")
     print(f"[sweep] {len(trials)} trials × {len(prompt_seed_pairs)} prompt/seed pairs = {total_jobs} jobs")
     print(f"[sweep] dry_run={args.dry_run} skip_existing={args.skip_existing}")
 
@@ -855,6 +925,7 @@ def main() -> None:
         index: {"ok": 0, "skipped": 0, "failed": 0}
         for index in range(len(trials))
     }
+    trial_wandb_runs: dict[int, Any] = {}
 
     step = 0
     ok = 0
@@ -867,6 +938,13 @@ def main() -> None:
         trial_dir.mkdir(parents=True, exist_ok=True)
         with (trial_dir / "trial_config.json").open("w") as f:
             json.dump(trial, f, indent=2)
+        trial_wandb_run = None
+        if args.wandb_run_per_config:
+            trial_wandb_run = init_wandb_trial_run(
+                args, cfg, run_name, out_root, trial, trial_index, prompt_seed_pairs
+            )
+            if trial_wandb_run is not None:
+                trial_wandb_runs[trial_index] = trial_wandb_run
 
         for prompt, seed in prompt_seed_pairs:
             result_dir = prompt_run_dir(trial_dir, prompt, seed)
@@ -926,7 +1004,15 @@ def main() -> None:
 
             append_csv(aggregate_csv, rows)
             wandb_log_result(
-                wandb_run, args, result_dir, trial, prompt, seed, trial_index, rows, step
+                trial_wandb_run or wandb_run,
+                args,
+                result_dir,
+                trial,
+                prompt,
+                seed,
+                trial_index,
+                rows,
+                step,
             )
             step += 1
 
@@ -989,6 +1075,7 @@ def main() -> None:
             fid_csv,
             clip_csv,
             failures_csv,
+            trial_wandb_runs,
         )
 
     print(f"\n[sweep] Done: {ok} OK, {skipped} skipped, {failed} failed.")
