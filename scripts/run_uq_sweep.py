@@ -101,7 +101,7 @@ def parse_args() -> argparse.Namespace:
                    help="Number of prompt rows in the final method overview image")
 
     p.add_argument("--compute-fid", action="store_true",
-                   help="Compute aggregate FID per trial after the sweep")
+                   help="Compute and log aggregate FID after every trial")
     p.add_argument("--fid-reference-dir", type=Path, default=None,
                    help="Optional real/reference image directory for FID")
     p.add_argument("--fid-batch-size", type=int, default=32)
@@ -460,8 +460,13 @@ def wandb_log_result(
         wandb_run.log(images, step=step)
 
 
-def compute_fid(args: argparse.Namespace, out_root: Path) -> Path:
-    fid_csv = out_root / "fid_results.csv"
+def compute_fid(
+    args: argparse.Namespace,
+    out_root: Path,
+    out_csv: Path | None = None,
+    trial_dir: Path | None = None,
+) -> Path:
+    fid_csv = out_csv or (out_root / "fid_results.csv")
     cmd = [
         sys.executable,
         "scripts/compute_sweep_fid.py",
@@ -476,6 +481,8 @@ def compute_fid(args: argparse.Namespace, out_root: Path) -> Path:
         "--min-images",
         str(args.fid_min_images),
     ]
+    if trial_dir is not None:
+        cmd.extend(["--only-trial-dir", str(trial_dir)])
     if args.fid_reference_dir is not None:
         cmd.extend(["--reference-dir", str(args.fid_reference_dir)])
     code = run_command(cmd, None, args.dry_run)
@@ -885,6 +892,37 @@ def wandb_log_per_config_runs(
         wandb_run.finish()
 
 
+def compute_and_log_trial_fid(
+    args: argparse.Namespace,
+    out_root: Path,
+    trial_dir: Path,
+    trial_index: int,
+    aggregate_fid_csv: Path,
+    wandb_run: Any,
+    job_counts: dict[str, int],
+) -> None:
+    trial_wandb_dir = trial_dir / "wandb"
+    trial_wandb_dir.mkdir(parents=True, exist_ok=True)
+    trial_fid_csv = trial_wandb_dir / "fid_results.csv"
+    compute_fid(args, out_root, out_csv=trial_fid_csv, trial_dir=trial_dir)
+    fid_rows = read_csv(trial_fid_csv)
+    if not fid_rows:
+        return
+    append_csv(aggregate_fid_csv, fid_rows)
+    if wandb_run is None:
+        return
+    payload = summarize_trial_for_wandb(
+        trial_index,
+        per_prompt_rows=[],
+        fid_rows=fid_rows,
+        job_counts=job_counts,
+    )
+    wandb_run.log(payload)
+    for key, value in payload.items():
+        wandb_run.summary[key] = value
+    wandb_log_csv_table(wandb_run, trial_fid_csv, "tables/fid_results")
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -926,6 +964,8 @@ def main() -> None:
         for index in range(len(trials))
     }
     trial_wandb_runs: dict[int, Any] = {}
+    fid_csv = out_root / "fid_results.csv" if args.compute_fid else None
+    clip_csv = None
 
     step = 0
     ok = 0
@@ -1016,11 +1056,20 @@ def main() -> None:
             )
             step += 1
 
-    fid_csv = None
-    clip_csv = None
+        if args.compute_fid and fid_csv is not None:
+            print(f"[sweep] computing FID after trial {trial_index + 1}/{len(trials)}")
+            compute_and_log_trial_fid(
+                args,
+                out_root,
+                trial_dir,
+                trial_index,
+                fid_csv,
+                trial_wandb_run or wandb_run,
+                trial_job_counts[trial_index],
+            )
+
     if args.compute_fid:
-        fid_csv = compute_fid(args, out_root)
-        wandb_log_fid(wandb_run, fid_csv)
+        fid_csv = out_root / "fid_results.csv"
     if args.compute_clip:
         clip_csv = compute_clip(args, out_root)
     summary_csv = summarize_methods(args, out_root)

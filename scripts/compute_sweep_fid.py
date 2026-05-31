@@ -27,6 +27,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--compare-to", type=str, default="baseline",
                    help="Method used as reference when --reference-dir is not set")
     p.add_argument("--out-csv", type=Path, default=None)
+    p.add_argument("--only-trial-index", type=int, default=None,
+                   help="Compute FID only for one trial index from the sweep")
+    p.add_argument("--only-trial-dir", type=Path, default=None,
+                   help="Compute FID only for one trial directory")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--dims", type=int, default=2048)
@@ -42,6 +46,24 @@ def parse_args() -> argparse.Namespace:
 
 def trial_dirs(sweep_dir: Path) -> list[Path]:
     return sorted(p for p in sweep_dir.iterdir() if (p / "trial_config.json").exists())
+
+
+def selected_trial_dirs(args: argparse.Namespace) -> list[tuple[int, Path]]:
+    trials = list(enumerate(trial_dirs(args.sweep_dir)))
+    if args.only_trial_index is not None:
+        trials = [
+            (trial_index, trial_dir)
+            for trial_index, trial_dir in trials
+            if trial_index == args.only_trial_index
+        ]
+    if args.only_trial_dir is not None:
+        target = args.only_trial_dir.resolve()
+        trials = [
+            (trial_index, trial_dir)
+            for trial_index, trial_dir in trials
+            if trial_dir.resolve() == target
+        ]
+    return trials
 
 
 def prompt_result_dirs(trial_dir: Path) -> list[Path]:
@@ -130,7 +152,7 @@ def main() -> None:
     fid_root = args.sweep_dir / "_fid_sets"
     fid_root.mkdir(parents=True, exist_ok=True)
 
-    for trial_index, trial_dir in enumerate(trial_dirs(args.sweep_dir)):
+    for trial_index, trial_dir in selected_trial_dirs(args):
         images_by_method = method_images(trial_dir)
         if args.reference_dir is None and args.compare_to not in images_by_method:
             rows.append({
