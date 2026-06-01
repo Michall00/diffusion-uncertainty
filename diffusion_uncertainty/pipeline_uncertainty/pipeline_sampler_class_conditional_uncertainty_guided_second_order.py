@@ -68,9 +68,29 @@ def estimate_score_update_posterior(M: int, model: torch.nn.Module, scheduler, i
     return pixel_wise_uncertainty, new_score
 
 
+def finite_float_tensor(tensor: torch.Tensor, clamp_abs: float | None = None) -> torch.Tensor:
+    tensor = torch.nan_to_num(tensor.float(), nan=0.0, posinf=0.0, neginf=0.0)
+    if clamp_abs is not None:
+        tensor = tensor.clamp(-clamp_abs, clamp_abs)
+    return tensor
+
+
 class DiffusionClassConditionalGuidedSecondOrder:
 
-    def __init__(self, model: Union[UViTAE, torch.nn.Module], scheduler, threshold: torch.Tensor | float, image_size: int, device: torch.device, batch_size: int, init_seed_rng: int, fid_evaluator: Optional[object] = None, M: int = 5, threshold_type: Literal['higher', 'lower'] = 'higher'):
+    def __init__(
+        self,
+        model: Union[UViTAE, torch.nn.Module],
+        scheduler,
+        threshold: torch.Tensor | float,
+        image_size: int,
+        device: torch.device,
+        batch_size: int,
+        init_seed_rng: int,
+        fid_evaluator: Optional[object] = None,
+        M: int = 5,
+        threshold_type: Literal['higher', 'lower'] = 'higher',
+        lambda_update: float = 0.1,
+    ):
         assert isinstance(threshold, (torch.Tensor, float)), "Threshold must be a tensor or a float"
         if isinstance(threshold, float):
             assert 0 <= threshold <= 1, "Threshold percentile must be between 0 and 1"
@@ -84,8 +104,11 @@ class DiffusionClassConditionalGuidedSecondOrder:
         self.is_uvit = isinstance(model, UViTAE)
         self.init_seed_rng = init_seed_rng
         self.M = M       
-        self.lambda_update = 7
+        self.lambda_update = lambda_update
         self.threshold_type = threshold_type
+        self.model.eval()
+        for parameter in self.model.parameters():
+            parameter.requires_grad_(False)
 
     def __call__(self, num_samples: Optional[int] = None, num_classes: Optional[int] = None, X_T: Optional[torch.Tensor] = None, y: Optional[torch.Tensor] = None, start_step: int = 0, num_steps: int | None = None) -> Dict[str, torch.Tensor]:
         """
@@ -163,6 +186,7 @@ class DiffusionClassConditionalGuidedSecondOrder:
                 gen_images = input
                 if self.is_uvit:
                     gen_images = self.model.decode(gen_images)
+                gen_images = torch.nan_to_num(gen_images.float(), nan=0.0, posinf=1.0, neginf=0.0)
                 gen_images = (gen_images / 2 + 0.5).clamp(0, 1)
                 num_generated_samples += gen_images.shape[0]
                 gen_images = gen_images * 255.0
@@ -194,6 +218,8 @@ class DiffusionClassConditionalGuidedSecondOrder:
 
     def update_with_uncertainty(self, input, y_slice, momentum_beta, second_order_momentum, i, t, t_tensor, noisy_residual, prev_noisy_sample, alpha_hat_t):
         pixel_wise_uncertainty = self.estimate_score_update(input, y_slice, i, t_tensor, noisy_residual, prev_noisy_sample, alpha_hat_t)
+        pixel_wise_uncertainty = finite_float_tensor(pixel_wise_uncertainty).clamp_min(0.0)
+        noisy_residual_f = finite_float_tensor(noisy_residual)
         print(f'{self.threshold_type=}')
         print(f'threshold: {self.threshold}')
         thresholded_map = calculate_threshold_map(self.threshold, i, pixel_wise_uncertainty, threshold_type=self.threshold_type)
@@ -212,10 +238,12 @@ class DiffusionClassConditionalGuidedSecondOrder:
         if second_order_momentum is None:
             second_order_momentum = pixel_wise_uncertainty
         else:
-            second_order_momentum = momentum_beta * second_order_momentum + (1 - momentum_beta) * pixel_wise_uncertainty
-        corrected_second_order_momentum = second_order_momentum / (1 - momentum_beta ** (i) + 1e-5)
+            second_order_momentum = momentum_beta * finite_float_tensor(second_order_momentum) + (1 - momentum_beta) * pixel_wise_uncertainty
+        second_order_momentum = finite_float_tensor(second_order_momentum).clamp_min(0.0)
+        corrected_second_order_momentum = second_order_momentum / (1 - momentum_beta ** (i + 1) + 1e-5)
+        corrected_second_order_momentum = finite_float_tensor(corrected_second_order_momentum).clamp_min(0.0)
 
-        sqrt_corrected_second_order_momentum = torch.sqrt(corrected_second_order_momentum)
+        sqrt_corrected_second_order_momentum = torch.sqrt(corrected_second_order_momentum + 1e-6)
                         
         print('pixel_wise_uncertainty mean:', pixel_wise_uncertainty.mean())
         print('pixel_wise_uncertainty std:', pixel_wise_uncertainty.std())
@@ -246,7 +274,15 @@ class DiffusionClassConditionalGuidedSecondOrder:
         # pixel_wise_uncertainty = pixel_wise_uncertainty * batch_std_uncertainty + batch_mean_uncertainty
         # min_noisy_residual = noisy_residual.amin()
         # max_noisy_residual = noisy_residual.amax()
-        noisy_residual = noisy_residual + pixel_wise_uncertainty *  torch.sign(torch.randn_like(noisy_residual)) * thresholded_map
+        update = pixel_wise_uncertainty / sqrt_corrected_second_order_momentum.clamp_min(1e-6)
+        update = finite_float_tensor(update)
+        score_scale = noisy_residual_f.abs().mean(dim=(1, 2, 3), keepdim=True).clamp_min(1e-3)
+        update_scale = update.abs().mean(dim=(1, 2, 3), keepdim=True).clamp_min(1e-6)
+        update = update / update_scale * score_scale
+        update = update.clamp(-5 * score_scale, 5 * score_scale)
+        random_direction = torch.sign(torch.randn_like(noisy_residual_f))
+        noisy_residual = noisy_residual_f + self.lambda_update * update * random_direction * thresholded_map
+        noisy_residual = finite_float_tensor(noisy_residual, clamp_abs=100.0).to(dtype=input.dtype)
         # noisy_residual= noisy_residual / (((pixel_wise_uncertainty) * thresholded_map  ) + ((1-thresholded_map) * torch.ones_like(input=sqrt_corrected_second_order_momentum)) + 1e-6) 
         # noisy_residual = (noisy_residual - noisy_residual.amin()) / (noisy_residual.amax() - noisy_residual.amin())
         # noisy_residual = noisy_residual * (max_noisy_residual - min_noisy_residual) + min_noisy_residual
@@ -258,7 +294,7 @@ class DiffusionClassConditionalGuidedSecondOrder:
         print('noisy_residual after correction max:', noisy_residual.amax())
 
         output = self.scheduler.step(noisy_residual, t, input)
-        prev_noisy_sample = output.prev_sample
+        prev_noisy_sample = torch.nan_to_num(output.prev_sample, nan=0.0, posinf=0.0, neginf=0.0)
         return prev_noisy_sample, second_order_momentum
 
     def calculate_threshold_map(self, i, pixel_wise_uncertainty):

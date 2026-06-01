@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-clip", action="store_true",
                    help="Skip CLIPScore evaluation")
     p.add_argument("--compute-clip", action="store_true",
-                   help="Compute CLIPScore once in aggregate after generation")
+                   help="Compute and log aggregate CLIPScore after every trial")
     p.add_argument("--clip-batch-size", type=int, default=32)
     p.add_argument("--clip-device", type=str, default="cpu")
     p.add_argument("--dry-run", action="store_true",
@@ -491,8 +491,13 @@ def compute_fid(
     return fid_csv
 
 
-def compute_clip(args: argparse.Namespace, out_root: Path) -> Path:
-    clip_csv = out_root / "clip_results.csv"
+def compute_clip(
+    args: argparse.Namespace,
+    out_root: Path,
+    out_csv: Path | None = None,
+    trial_dir: Path | None = None,
+) -> Path:
+    clip_csv = out_csv or (out_root / "clip_results.csv")
     cmd = [
         sys.executable,
         "scripts/compute_sweep_clip.py",
@@ -505,6 +510,8 @@ def compute_clip(args: argparse.Namespace, out_root: Path) -> Path:
         "--device",
         args.clip_device,
     ]
+    if trial_dir is not None:
+        cmd.extend(["--only-trial-dir", str(trial_dir)])
     code = run_command(cmd, None, args.dry_run)
     if code != 0:
         print(f"[sweep] WARN aggregate CLIP failed, returncode={code}")
@@ -637,6 +644,7 @@ def summarize_trial_for_wandb(
     per_prompt_rows: list[dict[str, str]],
     fid_rows: list[dict[str, str]],
     job_counts: dict[str, int],
+    clip_rows: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "trial/index": trial_index,
@@ -692,6 +700,48 @@ def summarize_trial_for_wandb(
 
     if guided_delta_means:
         set_payload_value(payload, "metrics/best_guided_delta_clip", max(guided_delta_means))
+
+    if clip_rows:
+        clip_by_method: dict[str, list[dict[str, str]]] = {}
+        baseline_aggregate_clip: dict[tuple[str, str], float] = {}
+        for row in clip_rows:
+            method = row.get("method", "")
+            if not method:
+                continue
+            clip_by_method.setdefault(method, []).append(row)
+            clip = parse_float(row.get("clip_score", "N/A"))
+            if method == "baseline" and clip is not None:
+                baseline_aggregate_clip[(row.get("prompt", ""), row.get("seed", ""))] = clip
+
+        aggregate_delta_means: list[float] = []
+        for method, method_rows in sorted(clip_by_method.items()):
+            clip_values: list[float] = []
+            delta_values: list[float] = []
+            for row in method_rows:
+                clip = parse_float(row.get("clip_score", "N/A"))
+                if clip is None:
+                    continue
+                clip_values.append(clip)
+                baseline = baseline_aggregate_clip.get((row.get("prompt", ""), row.get("seed", "")))
+                if method != "baseline" and baseline is not None:
+                    delta_values.append(clip - baseline)
+
+            prefix = f"clip/{method}"
+            set_payload_value(payload, f"{prefix}/mean", mean_value(clip_values))
+            set_payload_value(payload, f"{prefix}/std", std_value(clip_values))
+            set_payload_value(payload, f"{prefix}/n_images", len(clip_values))
+            if delta_values:
+                delta_mean = mean_value(delta_values)
+                aggregate_delta_means.append(delta_mean or 0.0)
+                set_payload_value(payload, f"{prefix}/delta_vs_baseline_mean", delta_mean)
+                set_payload_value(payload, f"{prefix}/delta_vs_baseline_std", std_value(delta_values))
+                set_payload_value(
+                    payload,
+                    f"{prefix}/delta_positive_rate",
+                    sum(value > 0 for value in delta_values) / len(delta_values),
+                )
+        if aggregate_delta_means:
+            set_payload_value(payload, "clip/best_delta_vs_baseline_mean", max(aggregate_delta_means))
 
     fid_by_method: dict[str, float] = {}
     for row in fid_rows:
@@ -862,6 +912,7 @@ def wandb_log_per_config_runs(
             per_prompt_by_trial.get(trial_index, []),
             fid_by_trial.get(trial_index, []),
             trial_job_counts.get(trial_index, {}),
+            clip_rows=clip_by_trial.get(trial_index, []),
         )
         wandb_run.log(payload)
         for key, value in payload.items():
@@ -923,6 +974,38 @@ def compute_and_log_trial_fid(
     wandb_log_csv_table(wandb_run, trial_fid_csv, "tables/fid_results")
 
 
+def compute_and_log_trial_clip(
+    args: argparse.Namespace,
+    out_root: Path,
+    trial_dir: Path,
+    trial_index: int,
+    aggregate_clip_csv: Path,
+    wandb_run: Any,
+    job_counts: dict[str, int],
+) -> None:
+    trial_wandb_dir = trial_dir / "wandb"
+    trial_wandb_dir.mkdir(parents=True, exist_ok=True)
+    trial_clip_csv = trial_wandb_dir / "clip_results.csv"
+    compute_clip(args, out_root, out_csv=trial_clip_csv, trial_dir=trial_dir)
+    clip_rows = read_csv(trial_clip_csv)
+    if not clip_rows:
+        return
+    append_csv(aggregate_clip_csv, clip_rows)
+    if wandb_run is None:
+        return
+    payload = summarize_trial_for_wandb(
+        trial_index,
+        per_prompt_rows=[],
+        fid_rows=[],
+        job_counts=job_counts,
+        clip_rows=clip_rows,
+    )
+    wandb_run.log(payload)
+    for key, value in payload.items():
+        wandb_run.summary[key] = value
+    wandb_log_csv_table(wandb_run, trial_clip_csv, "tables/clip_results")
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -965,7 +1048,7 @@ def main() -> None:
     }
     trial_wandb_runs: dict[int, Any] = {}
     fid_csv = out_root / "fid_results.csv" if args.compute_fid else None
-    clip_csv = None
+    clip_csv = out_root / "clip_results.csv" if args.compute_clip else None
 
     step = 0
     ok = 0
@@ -1067,11 +1150,22 @@ def main() -> None:
                 trial_wandb_run or wandb_run,
                 trial_job_counts[trial_index],
             )
+        if args.compute_clip and clip_csv is not None:
+            print(f"[sweep] computing CLIPScore after trial {trial_index + 1}/{len(trials)}")
+            compute_and_log_trial_clip(
+                args,
+                out_root,
+                trial_dir,
+                trial_index,
+                clip_csv,
+                trial_wandb_run or wandb_run,
+                trial_job_counts[trial_index],
+            )
 
     if args.compute_fid:
         fid_csv = out_root / "fid_results.csv"
     if args.compute_clip:
-        clip_csv = compute_clip(args, out_root)
+        clip_csv = out_root / "clip_results.csv"
     summary_csv = summarize_methods(args, out_root)
     overview_path = make_method_grid(args, out_root)
     if wandb_run is not None:

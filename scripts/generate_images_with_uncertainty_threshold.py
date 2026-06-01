@@ -55,6 +55,23 @@ dataset_model_map = {
 }
 
 
+def compute_fid_score_or_status(gen_images: torch.Tensor, args, device: torch.device) -> tuple[float | None, str]:
+    if not torch.isfinite(gen_images.float()).all():
+        return None, 'invalid generated images: contains NaN or Inf'
+    try:
+        fid_score = compute_fid_score_bayesdiff_from_dataset(
+            gen_images=gen_images,
+            dataset_name=args.dataset_name,
+            device=device,
+            batch_size=args.batch_size,
+        )
+    except Exception as exc:
+        return None, f'error: {exc}'
+    if not np.isfinite(fid_score):
+        return None, f'non-finite FID: {fid_score}'
+    return float(fid_score), 'ok'
+
+
 def compute_fid_score_gen_images_guidance(path_storage_images: Path, device = torch.device('cuda'), batch_size = 64):
     gen_images = torch.load(path_storage_images / 'gen_images.pth')
     gen_images = gen_images.to(device)
@@ -220,7 +237,7 @@ def main():
         pipeline_sampler_threshold = DiffusionClassConditionalGuidedPosteriorDistribution(model, sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type)
     elif args.guidance_type == 'second_order':
         print('Using second order guidance')
-        pipeline_sampler_threshold = DiffusionClassConditionalGuidedSecondOrder(model, sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type)
+        pipeline_sampler_threshold = DiffusionClassConditionalGuidedSecondOrder(model, sampler, thresholds, image_size, device, args.batch_size, seed, M=args.M, threshold_type=args.threshold_type, lambda_update=args.lambda_update)
     else:
         raise ValueError(f'Unknown guidance type {args.guidance_type}')
 
@@ -285,13 +302,19 @@ def main():
         print('Guidance changed pixel fraction:', diff_metrics['pixel_changed_fraction'])
 
         if not args.skip_fid:
-            fid_score = compute_fid_score_bayesdiff_from_dataset(gen_images=output['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
-            fid_score_guidance = compute_fid_score_bayesdiff_from_dataset(gen_images=output_threshold['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
+            fid_score, fid_status = compute_fid_score_or_status(output['gen_images'], args, device)
+            fid_score_guidance, fid_guidance_status = compute_fid_score_or_status(output_threshold['gen_images'], args, device)
             # fid_score, fid_score_guidance = compute_fid_score_gen_images_guidance(storage_images)
             print(f'FID score: {fid_score}')
+            print(f'FID status: {fid_status}')
             print(f'FID score with guidance: {fid_score_guidance}')
-            results_guidance['fid_score'] = fid_score
-            results_guidance['fid_score_guidance'] = fid_score_guidance
+            print(f'FID guidance status: {fid_guidance_status}')
+            results_guidance['fid_status'] = fid_status
+            results_guidance['fid_guidance_status'] = fid_guidance_status
+            if fid_score is not None:
+                results_guidance['fid_score'] = fid_score
+            if fid_score_guidance is not None:
+                results_guidance['fid_score_guidance'] = fid_score_guidance
         else:
             print('Skipping FID computation')
     else:
@@ -305,17 +328,23 @@ def main():
             print('Guidance pixel max abs diff:', diff_metrics['pixel_max_abs_diff'])
             print('Guidance changed pixel fraction:', diff_metrics['pixel_changed_fraction'])
             if not args.skip_fid:
-                fid_score: float = compute_fid_score_bayesdiff_from_dataset(gen_images=output['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
+                fid_score, fid_status = compute_fid_score_or_status(output['gen_images'], args, device)
                 print(f'FID score: {fid_score}')
-                results_guidance['fid_score'] = fid_score
+                print(f'FID status: {fid_status}')
+                results_guidance['fid_status'] = fid_status
+                if fid_score is not None:
+                    results_guidance['fid_score'] = fid_score
             batch_gen_images = output['gen_images'][:64]
             if batch_gen_images.dtype == torch.uint8:
                 batch_gen_images = batch_gen_images.float() / 255.0
             save_image(batch_gen_images, fp=storage_images / 'gen_images.png', nrow=8)
         if not args.skip_fid:
-            fid_score_guidance = compute_fid_score_bayesdiff_from_dataset(gen_images=output_threshold['gen_images'], dataset_name=args.dataset_name, device=device, batch_size=args.batch_size)
+            fid_score_guidance, fid_guidance_status = compute_fid_score_or_status(output_threshold['gen_images'], args, device)
             print(f'FID score with guidance: {fid_score_guidance}')
-            results_guidance['fid_score_guidance'] = fid_score_guidance
+            print(f'FID guidance status: {fid_guidance_status}')
+            results_guidance['fid_guidance_status'] = fid_guidance_status
+            if fid_score_guidance is not None:
+                results_guidance['fid_score_guidance'] = fid_score_guidance
         else:
             print('Skipping FID computation')
 

@@ -22,6 +22,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-id", default="openai/clip-vit-base-patch32")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--only-trial-index", type=int, default=None,
+                        help="Compute CLIPScore only for one trial index from the sweep")
+    parser.add_argument("--only-trial-dir", type=Path, default=None,
+                        help="Compute CLIPScore only for one trial directory")
     return parser.parse_args()
 
 
@@ -29,13 +33,31 @@ def trial_dirs(sweep_dir: Path) -> list[Path]:
     return sorted(p for p in sweep_dir.iterdir() if (p / "trial_config.json").exists())
 
 
+def selected_trial_dirs(args: argparse.Namespace) -> list[tuple[int, Path]]:
+    trials = list(enumerate(trial_dirs(args.sweep_dir)))
+    if args.only_trial_index is not None:
+        trials = [
+            (trial_index, trial_dir)
+            for trial_index, trial_dir in trials
+            if trial_index == args.only_trial_index
+        ]
+    if args.only_trial_dir is not None:
+        target = args.only_trial_dir.resolve()
+        trials = [
+            (trial_index, trial_dir)
+            for trial_index, trial_dir in trials
+            if trial_dir.resolve() == target
+        ]
+    return trials
+
+
 def prompt_result_dirs(trial_dir: Path) -> list[Path]:
     return sorted(p for p in trial_dir.iterdir() if p.is_dir() and (p / "results.npz").exists())
 
 
-def load_items(sweep_dir: Path) -> list[dict[str, object]]:
+def load_items(args: argparse.Namespace) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
-    for trial_index, trial_dir in enumerate(trial_dirs(sweep_dir)):
+    for trial_index, trial_dir in selected_trial_dirs(args):
         for result_dir in prompt_result_dirs(trial_dir):
             data = np.load(result_dir / "results.npz", allow_pickle=True)
             prompt = str(data["prompt"])
@@ -86,7 +108,7 @@ def compute_scores(items: list[dict[str, object]], args: argparse.Namespace) -> 
 def main() -> None:
     args = parse_args()
     out_csv = args.out_csv or (args.sweep_dir / "clip_results.csv")
-    items = load_items(args.sweep_dir)
+    items = load_items(args)
     rows = compute_scores(items, args) if items else []
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)

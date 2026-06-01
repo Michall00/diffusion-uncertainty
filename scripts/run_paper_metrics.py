@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-steps-guidance", type=int, default=20)
     p.add_argument("-M", "--num-uncertainty-samples", type=int, default=5, dest="M")
     p.add_argument("--percentile", type=float, default=0.95)
-    p.add_argument("--lambda-update", type=float, default=1.0)
+    p.add_argument("--lambda-update", type=float, default=0.1)
     p.add_argument("--gradient-wrt", default="input", choices=["input", "score"])
     p.add_argument("--gradient-direction", default="descend", choices=["ascend", "descend"])
     p.add_argument("--threshold-type", default="higher", choices=["higher", "lower"])
@@ -319,6 +319,8 @@ def flatten_metrics(fid_result: dict[str, Any], ause_result: dict[str, Any], gui
         "pixel_mean_abs_diff",
         "pixel_max_abs_diff",
         "pixel_changed_fraction",
+        "fid_status",
+        "fid_guidance_status",
     ]:
         if key in fid_result:
             metrics[key] = fid_result[key]
