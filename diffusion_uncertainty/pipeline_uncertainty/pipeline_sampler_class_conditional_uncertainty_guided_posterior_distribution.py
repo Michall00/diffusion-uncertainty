@@ -70,7 +70,19 @@ def estimate_score_update_posterior(M: int, model: torch.nn.Module, scheduler, i
 
 class DiffusionClassConditionalGuidedPosteriorDistribution:
 
-    def __init__(self, model: Union[UViTAE, torch.nn.Module], scheduler, threshold: torch.Tensor | float, image_size: int, device: torch.device, batch_size: int, init_seed_rng: int, fid_evaluator: Optional[object] = None, M: int = 5):
+    def __init__(
+        self,
+        model: Union[UViTAE, torch.nn.Module],
+        scheduler,
+        threshold: torch.Tensor | float,
+        image_size: int,
+        device: torch.device,
+        batch_size: int,
+        init_seed_rng: int,
+        fid_evaluator: Optional[object] = None,
+        M: int = 5,
+        threshold_type: Literal['higher', 'lower'] = 'higher',
+    ):
         assert isinstance(threshold, (torch.Tensor, float)), "Threshold must be a tensor or a float"
         if isinstance(threshold, float):
             assert 0 <= threshold <= 1, "Threshold percentile must be between 0 and 1"
@@ -84,6 +96,7 @@ class DiffusionClassConditionalGuidedPosteriorDistribution:
         self.is_uvit = isinstance(model, UViTAE)
         self.init_seed_rng = init_seed_rng
         self.M = M       
+        self.threshold_type = threshold_type
         self.lambda_update = 7
 
     def __call__(self, num_samples: Optional[int] = None, num_classes: Optional[int] = None, X_T: Optional[torch.Tensor] = None, y: Optional[torch.Tensor] = None, start_step: int = 0, num_steps: int | None = None) -> Dict[str, torch.Tensor]:
@@ -155,7 +168,12 @@ class DiffusionClassConditionalGuidedPosteriorDistribution:
                     if ((start_step + num_steps) >= i >= start_step):
 
                         pixel_wise_uncertainty, posterior_score = self.estimate_score_update(input, y_slice, i, t_tensor, noisy_residual, prev_noisy_sample, alpha_hat_t)
-                        thresholded_map = calculate_threshold_map(self.threshold, i, pixel_wise_uncertainty)
+                        thresholded_map = calculate_threshold_map(
+                            self.threshold,
+                            i,
+                            pixel_wise_uncertainty,
+                            threshold_type=self.threshold_type,
+                        )
 
                         noisy_residual= posterior_score * thresholded_map + noisy_residual * (1 - thresholded_map)
                         output = self.scheduler.step(noisy_residual, t, input)
