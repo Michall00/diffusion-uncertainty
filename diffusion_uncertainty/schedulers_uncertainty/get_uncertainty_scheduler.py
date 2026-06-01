@@ -33,8 +33,3 @@ def get_uncertainty_scheduler(args, y, unet, scheduler):
     else:
         uc_scheduler = DDIMSchedulerUncertaintyImagenetClassConditionedMCDropout.from_config(scheduler.config, prompt_embeds=y, unet=unet, M=args.M, after_step=args.start_step_uc, num_steps_uc=args.num_steps_uc, eta=args.eta)
     return uc_scheduler
-
-# aliases
-
-instatiate_uc_scheduler = get_uncertainty_scheduler
-instatiate_uncertainty_scheduler = get_uncertainty_scheduler

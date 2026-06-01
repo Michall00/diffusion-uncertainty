@@ -47,7 +47,7 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from scripts.compute_dataset_fid import calculate_activation_statistics_dataset, calculate_frechet_distance, instantiate_inception_v3
 from torchvision.utils import make_grid
 from torchvision.utils import save_image
-from diffusion_uncertainty.schedulers_uncertainty.get_uncertainty_scheduler import instatiate_uncertainty_scheduler
+from diffusion_uncertainty.schedulers_uncertainty.get_uncertainty_scheduler import get_uncertainty_scheduler
 
 dataset_model_map = {
     'imagenet64': ROOT.joinpath('models/64x64_diffusion.pth'),
@@ -207,7 +207,7 @@ def main():
         sampler = DDIMScheduler.from_config(config=scheduler.config)
     sampler.set_timesteps(generation_steps)
 
-    # uc_scheduler = instatiate_uncertainty_scheduler(args, y, model, scheduler)
+    # uc_scheduler = get_uncertainty_scheduler(args, y, model, scheduler)
     # uc_scheduler.set_timesteps(generation_steps)
 
     pipeline_sampler_ddim = DiffusionClassConditional(model, sampler, image_size, device, args.batch_size, seed)

@@ -15,7 +15,7 @@ from diffusion_uncertainty.paths import AUSE, CIFAR10, CONFIG, DIFFUSION_STARTIN
 from diffusion_uncertainty.pipeline_uncertainty.pipeline_sampler_class_conditional_uncertainty import DiffusionClassConditionalWithUncertainty
 from diffusion_uncertainty.schedulers_uncertainty.scheduling_ddim_uncertainty_centered import DDIMSchedulerUncertainty
 from diffusion_uncertainty.utils import DATASET_IMAGE_SIZE, load_X_T, load_y, predict_model
-from diffusion_uncertainty.schedulers_uncertainty.get_uncertainty_scheduler import instatiate_uc_scheduler
+from diffusion_uncertainty.schedulers_uncertainty.get_uncertainty_scheduler import get_uncertainty_scheduler
 import pytorch_lightning as pl
 from tqdm import tqdm
 
@@ -82,7 +82,7 @@ def main():
     scheduler_type: str = args.scheduler_type
     model, scheduler = init_model_scheduler(args.dataset)
     model = model.to(device)
-    uc_scheduler = instantiate_uc_scheduler(args, scheduler, model, y=None)
+    uc_scheduler = get_uncertainty_scheduler(args, y=None, unet=model, scheduler=scheduler)
     uc_scheduler.set_timesteps(args.num_steps_uc)
     
     dataset = load_dataset(args.dataset)
