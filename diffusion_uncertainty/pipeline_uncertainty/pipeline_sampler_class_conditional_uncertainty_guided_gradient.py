@@ -23,6 +23,9 @@ class DiffusionClassConditionalGuidedGradient:
         self.gradient_wrt = gradient_wrt
         self.threshold_type = threshold_type
         self.gradient_direction = gradient_direction
+        self.model.eval()
+        for parameter in self.model.parameters():
+            parameter.requires_grad_(False)
 
     def __call__(self, num_samples: Optional[int] = None, num_classes: Optional[int] = None, X_T: Optional[torch.Tensor] = None, y: Optional[torch.Tensor] = None, start_step: int = 0, num_steps: int | None = None) -> Dict[str, torch.Tensor]:
         """
@@ -175,16 +178,18 @@ class DiffusionClassConditionalGuidedGradient:
         Returns:
             tuple: A tuple containing the pixel-wise uncertainty and the update scores.
         """
-        noisy_residual.requires_grad = self.gradient_wrt == 'score'
-        input.requires_grad = self.gradient_wrt == 'input'
-        t_tensor.requires_grad = False
-        y_slice.requires_grad = False
+        input_for_grad = input.detach().requires_grad_(self.gradient_wrt == 'input')
+        noisy_residual_for_grad = noisy_residual.detach().requires_grad_(self.gradient_wrt == 'score')
+        prev_noisy_sample = prev_noisy_sample.detach()
+        t_tensor = t_tensor.detach()
+        y_slice = y_slice.detach()
         print('Step #:', i)
         pred_epsilons = []
         with torch.set_grad_enabled(True):
-            pred_epsilon = predict_model(self.model, input, t_tensor, y_slice)
-            pred_epsilon.mean(dim=0).sum().backward()
-            pred_x_0 = (input - sqrt(1 - alpha_hat_t) * noisy_residual) / sqrt(alpha_hat_t)
+            pred_epsilon = predict_model(self.model, input_for_grad, t_tensor, y_slice)
+            if pred_epsilon.requires_grad:
+                pred_epsilon.mean(dim=0).sum().backward()
+            pred_x_0 = (input_for_grad - sqrt(1 - alpha_hat_t) * noisy_residual_for_grad) / sqrt(alpha_hat_t)
 
             for _ in range(self.M):
                 x_hat_t = sqrt(alpha_hat_t) * pred_x_0 + sqrt(1 - alpha_hat_t) * torch.randn_like(prev_noisy_sample)
@@ -192,7 +197,7 @@ class DiffusionClassConditionalGuidedGradient:
                 pred_epsilons.append(pred_epsilon)
             pred_epsilons = torch.stack(pred_epsilons, dim=0)
 
-            pixel_wise_uncertainty = (pred_epsilons - noisy_residual.unsqueeze(0)).pow(2).mean(dim=0)
+            pixel_wise_uncertainty = (pred_epsilons - noisy_residual_for_grad.unsqueeze(0)).pow(2).mean(dim=0)
             uncertainty = pixel_wise_uncertainty.mean(dim=0).sum()
             uncertainty.backward()
         # with torch.no_grad():
@@ -206,9 +211,13 @@ class DiffusionClassConditionalGuidedGradient:
         #     pixel_wise_uncertainty = (pred_epsilons - noisy_residual.unsqueeze(0)).pow(2).mean(dim=0)
 
         if self.gradient_wrt == 'input':
-            update_scores = input.grad
+            update_scores = input_for_grad.grad
         else:
-            update_scores = noisy_residual.grad
+            update_scores = noisy_residual_for_grad.grad
+        if update_scores is None:
+            update_scores = torch.zeros_like(input)
+        update_scores = update_scores.detach()
+        pixel_wise_uncertainty = pixel_wise_uncertainty.detach()
         # update_scores = -7 * uncertainty
         return pixel_wise_uncertainty, update_scores
     
